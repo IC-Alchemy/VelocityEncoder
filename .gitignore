@@ -1,0 +1,27 @@
+# Arduino/embedded build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.bin
+*.elf
+*.hex
+*.map
+*.lst
+*.ino.cpp
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# IDE/editor files
+.vscode/
+.idea/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db

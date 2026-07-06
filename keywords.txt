@@ -1,0 +1,19 @@
+# Syntax Coloring Map For AS5600 / MagEncoder
+
+# Datatypes (KEYWORD1)
+MagEncoder	KEYWORD1
+VelocityZone	KEYWORD1
+
+# Methods and Functions (KEYWORD2)
+begin	KEYWORD2
+update	KEYWORD2
+getRawAngle	KEYWORD2
+getNormalizedAngle	KEYWORD2
+getCumulativePosition	KEYWORD2
+getAngularSpeed	KEYWORD2
+getPositionPercentage	KEYWORD2
+isConnected	KEYWORD2
+getVelocityZone	KEYWORD2
+getParameterIncrement	KEYWORD2
+mapPositionToRange	KEYWORD2
+resetCumulativePosition	KEYWORD2
