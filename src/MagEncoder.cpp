@@ -1,5 +1,6 @@
 #include "MagEncoder.h"
 
+#include <algorithm> // std::min / std::max, used by the velocity curve
 #include <cmath>
 
 namespace
@@ -21,6 +22,13 @@ namespace
 
     // Below this filtered speed the output is attenuated to suppress jitter.
     constexpr float NOISE_GATE_DPS = 1.0f;
+
+    MagEncoder::Config configForSensor(MagEncoder::Sensor sensor)
+    {
+        MagEncoder::Config cfg;
+        cfg.sensor = sensor;
+        return cfg;
+    }
 }
 
 MagEncoder::MagEncoder()
@@ -28,8 +36,18 @@ MagEncoder::MagEncoder()
 {
 }
 
+MagEncoder::MagEncoder(Sensor sensor)
+    : MagEncoder(configForSensor(sensor))
+{
+}
+
 MagEncoder::MagEncoder(const Config &config)
     : _cfg(config),
+      _wire(&Wire),
+      _countsPerRev(AS5600_COUNTS_PER_REV),
+      _wrapThreshold(AS5600_COUNTS_PER_REV / 2),
+      _countsToDegrees(360.0f / AS5600_COUNTS_PER_REV),
+      _countsToNormalized(1.0f / (AS5600_COUNTS_PER_REV - 1)),
       _connected(false),
       _rawAngle(0),
       _lastRawAngle(0),
@@ -40,36 +58,85 @@ MagEncoder::MagEncoder(const Config &config)
       _lastSpeedTime(0),
       _lastCurvedSpeed(0.0f)
 {
+    configureForSensor();
 }
 
-bool MagEncoder::begin()
+void MagEncoder::configureForSensor()
 {
-    Wire.begin();
-    delay(50);
+    // Resolve the "0 means use the sensor's own default" address sentinel.
+    if (_cfg.i2cAddress == 0)
+    {
+        _cfg.i2cAddress = (_cfg.sensor == Sensor::TMAG5273) ? TMAG5273_ADDRESS
+                                                            : AS5600_ADDRESS;
+    }
 
-    _connected = checkConnection();
+    _countsPerRev = (_cfg.sensor == Sensor::TMAG5273)
+                        ? TMAG5273::ANGLE_COUNTS_PER_REV
+                        : AS5600_COUNTS_PER_REV;
+
+    _wrapThreshold      = static_cast<int16_t>(_countsPerRev / 2);
+    _countsToDegrees    = 360.0f / static_cast<float>(_countsPerRev);
+    _countsToNormalized = 1.0f / static_cast<float>(_countsPerRev - 1);
+
+    // Keep the embedded TMAG driver in step with the encoder's address choice
+    // so a sketch only has to set one field.
+    _cfg.tmag.i2cAddress = _cfg.i2cAddress;
+    _tmag = TMAG5273(_cfg.tmag);
+}
+
+bool MagEncoder::begin(TwoWire &wire)
+{
+    _wire = &wire;
+
+    if (_cfg.sensor == Sensor::TMAG5273)
+    {
+        _connected = _tmag.begin(wire);
+    }
+    else
+    {
+        _wire->begin();
+        delay(50);
+        _connected = checkConnection();
+    }
+
     if (!_connected)
         return false;
 
-    update();
+    // Seed the baselines from the current reading so the first update() does
+    // not report a jump from zero.
+    _rawAngle     = readAngle();
     _lastRawAngle = _rawAngle;
     _lastPosition = _rawAngle;
+
+    _lastReadTime  = millis();
     _lastSpeedTime = millis();
+    _angularSpeed  = 0.0f;
     return true;
 }
 
-int16_t MagEncoder::unwrapAngleDelta(uint16_t current, uint16_t previous)
+int16_t MagEncoder::unwrapAngleDelta(uint16_t current, uint16_t previous) const
 {
     int16_t delta = static_cast<int16_t>(current) - static_cast<int16_t>(previous);
 
-    // Correct 12-bit wrap-around so multi-turn motion is reported as a signed
-    // delta in [-2048, 2047].
-    if (delta > WRAP_THRESHOLD)
-        delta -= TICKS_PER_REV;
-    else if (delta < -WRAP_THRESHOLD)
-        delta += TICKS_PER_REV;
+    // Correct the wrap-around at the top of the count range so multi-turn
+    // motion is reported as a signed delta of at most half a revolution.
+    if (delta > _wrapThreshold)
+        delta -= static_cast<int16_t>(_countsPerRev);
+    else if (delta < -_wrapThreshold)
+        delta += static_cast<int16_t>(_countsPerRev);
 
     return delta;
+}
+
+uint16_t MagEncoder::readAngle()
+{
+    if (_cfg.sensor == Sensor::TMAG5273)
+    {
+        _tmag.update();
+        return _tmag.getRawAngle();
+    }
+
+    return readAS5600Register16(REG_ANGLE);
 }
 
 void MagEncoder::update()
@@ -83,7 +150,7 @@ void MagEncoder::update()
 
     _lastReadTime = currentTime;
     _lastRawAngle = _rawAngle;
-    _rawAngle = readRegister16(REG_ANGLE);
+    _rawAngle     = readAngle();
 
     updateCumulativePosition();
     updateAngularSpeed(currentTime);
@@ -112,7 +179,7 @@ void MagEncoder::updateAngularSpeed(unsigned long currentTime)
     const int16_t angleDelta = unwrapAngleDelta(_rawAngle, _lastRawAngle);
 
     // Instantaneous speed in degrees/second.
-    const float instantSpeed = (angleDelta * RAW_TO_DEGREES) / (deltaTime / 1000.0f);
+    const float instantSpeed = (angleDelta * _countsToDegrees) / (deltaTime / 1000.0f);
 
     // Adaptive low-pass filter: less smoothing for faster movements so
     // high-speed turns stay responsive.
@@ -194,10 +261,11 @@ float MagEncoder::getParameterIncrement(float minVal, float maxVal, uint8_t maxR
     if (totalRange <= 0.0f)
         return 0.0f;
 
-    // Base increment per encoder tick across the requested number of turns.
-    const float baseIncrement = totalRange / (static_cast<float>(TICKS_PER_REV) * maxRotations);
+    // Base increment per encoder count across the requested number of turns.
+    const float baseIncrement =
+        totalRange / (static_cast<float>(_countsPerRev) * maxRotations);
 
-    // Velocity-sensitive scaling: faster turns cover more range per tick.
+    // Velocity-sensitive scaling: faster turns cover more range per count.
     const float velocityScale = calculateVelocityScale(fabsf(_angularSpeed));
 
     const int16_t angleDelta = unwrapAngleDelta(_rawAngle, _lastRawAngle);
@@ -216,7 +284,12 @@ uint16_t MagEncoder::getRawAngle() const
 
 float MagEncoder::getNormalizedAngle() const
 {
-    return static_cast<float>(_rawAngle) * RAW_TO_NORMALIZED;
+    return static_cast<float>(_rawAngle) * _countsToNormalized;
+}
+
+float MagEncoder::getAngleDegrees() const
+{
+    return static_cast<float>(_rawAngle) * _countsToDegrees;
 }
 
 int32_t MagEncoder::getCumulativePosition() const
@@ -231,14 +304,44 @@ float MagEncoder::getAngularSpeed() const
 
 float MagEncoder::getPositionPercentage(uint8_t maxRotations) const
 {
-    const float percentage =
-        static_cast<float>(_cumulativePosition) / (static_cast<float>(TICKS_PER_REV) * maxRotations);
+    const float percentage = static_cast<float>(_cumulativePosition) /
+                             (static_cast<float>(_countsPerRev) * maxRotations);
     return std::max(0.0f, std::min(percentage, 1.0f));
 }
 
 bool MagEncoder::isConnected() const
 {
     return _connected;
+}
+
+MagEncoder::Sensor MagEncoder::getSensor() const
+{
+    return _cfg.sensor;
+}
+
+const char *MagEncoder::getSensorName() const
+{
+    return (_cfg.sensor == Sensor::TMAG5273) ? "TMAG5273" : "AS5600";
+}
+
+uint8_t MagEncoder::getI2CAddress() const
+{
+    return _cfg.i2cAddress;
+}
+
+uint16_t MagEncoder::getCountsPerRevolution() const
+{
+    return _countsPerRev;
+}
+
+TMAG5273 &MagEncoder::tmag()
+{
+    return _tmag;
+}
+
+const TMAG5273 &MagEncoder::tmag() const
+{
+    return _tmag;
 }
 
 MagEncoder::VelocityZone MagEncoder::getVelocityZone() const
@@ -259,27 +362,27 @@ MagEncoder::VelocityZone MagEncoder::getVelocityZone() const
 void MagEncoder::resetCumulativePosition(int32_t position)
 {
     _cumulativePosition = position;
-    _lastPosition = static_cast<int16_t>(_rawAngle);
+    _lastPosition = _rawAngle;
 }
 
-uint16_t MagEncoder::readRegister16(uint8_t reg) const
+uint16_t MagEncoder::readAS5600Register16(uint8_t reg) const
 {
-    Wire.beginTransmission(_cfg.i2cAddress);
-    Wire.write(reg);
-    if (Wire.endTransmission() != 0)
+    _wire->beginTransmission(_cfg.i2cAddress);
+    _wire->write(reg);
+    if (_wire->endTransmission() != 0)
         return 0;
 
-    Wire.requestFrom(static_cast<int>(_cfg.i2cAddress), 2);
-    if (Wire.available() < 2)
+    _wire->requestFrom(static_cast<int>(_cfg.i2cAddress), 2);
+    if (_wire->available() < 2)
         return 0;
 
-    uint16_t result = Wire.read() << 8;
-    result |= Wire.read();
+    uint16_t result = _wire->read() << 8;
+    result |= _wire->read();
     return result & 0x0FFF; // 12-bit mask
 }
 
 bool MagEncoder::checkConnection()
 {
-    Wire.beginTransmission(_cfg.i2cAddress);
-    return (Wire.endTransmission() == 0);
+    _wire->beginTransmission(_cfg.i2cAddress);
+    return (_wire->endTransmission() == 0);
 }
