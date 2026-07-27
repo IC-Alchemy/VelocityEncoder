@@ -4,17 +4,28 @@
 #include <Arduino.h>
 #include <Wire.h>
 
+#include "TMAG5273.h"
+
 /**
  * MagEncoder
  * ----------
- * Arduino driver for the AS5600 12-bit magnetic rotary encoder, with
- * velocity-sensitive parameter control built in.
+ * Arduino driver for magnetic rotary position sensors, with velocity-sensitive
+ * parameter control built in.
  *
- * Wraps I2C communication with the AS5600 and provides:
- *   - Raw and normalized angle reads (0..4095, 0.0..1.0).
- *   - Cumulative position tracking with 12-bit wrap-around correction, so
- *     multi-turn motion across several revolutions is reported as a single
- *     monotonically-increasing (or decreasing) int32_t.
+ * Two sensors are supported and selected through Config::sensor:
+ *   - Sensor::AS5600   — AMS AS5600, 12-bit on-axis magnetic encoder
+ *                        (4096 counts per revolution, I2C address 0x36).
+ *   - Sensor::TMAG5273 — TI TMAG5273, 3D Hall-effect sensor whose CORDIC
+ *                        engine reports angle at 1/16 degree
+ *                        (5760 counts per revolution, I2C address 0x35 for
+ *                        the A parts; see TMAG5273::ADDRESS_A..ADDRESS_D).
+ *
+ * Everything above the raw angle read is shared, so the knob feel is identical
+ * on both parts and a sketch can switch sensors by changing one field:
+ *   - Raw and normalized angle (0..countsPerRevolution-1, 0.0..1.0).
+ *   - Cumulative position tracking with wrap-around correction, so multi-turn
+ *     motion across several revolutions is reported as a single monotonically-
+ *     increasing (or decreasing) int32_t.
  *   - Filtered angular speed in degrees/second (adaptive low-pass filter).
  *   - A velocity-scaled "parameter increment" for knob-driven musical or UI
  *     applications: slow turns give fine control, fast turns cover more range,
@@ -24,12 +35,24 @@
  * argument or as a configurable default, so the library carries no dependency
  * on any particular instrument or application.
  *
- * Wire must be available on the target board; the class calls Wire.begin().
- * Builds on any Arduino core that provides a working TwoWire implementation.
+ * When the TMAG5273 is selected, tmag() gives direct access to the underlying
+ * driver so a sketch can also read the three magnetic axes, die temperature,
+ * vector magnitude and diagnostics that the AS5600 has no equivalent for.
+ *
+ * A TwoWire instance must be available on the target board; begin() calls
+ * Wire.begin() (or the bus you pass in). Builds on any Arduino core that
+ * provides a working TwoWire implementation.
  */
 class MagEncoder
 {
 public:
+    /** Which physical sensor the encoder is reading. */
+    enum class Sensor : uint8_t
+    {
+        AS5600,
+        TMAG5273
+    };
+
     /**
      * Tunable response curve parameters.
      *
@@ -41,7 +64,8 @@ public:
      */
     struct Config
     {
-        uint8_t  i2cAddress        = 0x36;   // AS5600 default I2C address
+        Sensor   sensor            = Sensor::AS5600; // Which part is fitted
+        uint8_t  i2cAddress        = 0;      // 0 = the selected sensor's default address
         uint32_t readIntervalMs    = 5;      // Minimum ms between sensor reads
         float    minVelDps         = 90.0f;  // Below this speed, output is clamped to minScale
         float    maxVelDps         = 2400.0f; // Above this speed, output is clamped to maxScale
@@ -49,12 +73,29 @@ public:
         float    maxScale          = 3.2f;   // Fast-turn scale (parameter increment multiplier)
         float    curveExponent     = 1.8f;   // Mid-range curve shape
         float    velocitySmoothing = 0.08f;  // EMA factor for the velocity scale (smaller = smoother)
+
+        /**
+         * TMAG5273-only settings, ignored when sensor is AS5600. The i2cAddress
+         * field above wins over tmag.i2cAddress so both sensors are addressed
+         * the same way.
+         */
+        TMAG5273::Config tmag;
     };
 
+    /** Default I2C address of each supported sensor. */
+    static constexpr uint8_t AS5600_ADDRESS   = 0x36;
+    static constexpr uint8_t TMAG5273_ADDRESS = TMAG5273::ADDRESS_A;
+
     /**
-     * Construct an encoder with default tuning.
+     * Construct an encoder with default tuning, reading an AS5600.
      */
     MagEncoder();
+
+    /**
+     * Construct an encoder with default tuning for the given sensor. Equivalent
+     * to filling in Config::sensor and leaving everything else alone.
+     */
+    explicit MagEncoder(Sensor sensor);
 
     /**
      * Construct an encoder with custom response tuning.
@@ -62,12 +103,18 @@ public:
     explicit MagEncoder(const Config &config);
 
     /**
-     * Initialize I2C and verify the sensor is present at the configured address.
+     * Initialize I2C and verify the sensor is present at the configured
+     * address. For the TMAG5273 this also verifies the manufacturer ID and
+     * writes the sensor configuration.
+     *
      * Returns true if the sensor acknowledged, false otherwise. On success,
      * also seeds the cumulative position and speed baseline from the current
      * reading so the first update() call doesn't produce a spurious delta.
+     *
+     * Pass a different TwoWire instance to run the sensor on a secondary I2C
+     * bus (Wire1 on boards that have one).
      */
-    bool begin();
+    bool begin(TwoWire &wire = Wire);
 
     /**
      * Read the current angle from the sensor and update derived state
@@ -81,14 +128,20 @@ public:
     // Read-only state accessors
     // ------------------------------------------------------------------
 
-    /** Raw 12-bit angle from the AS5600 RAW_ANGLE register (0..4095). */
+    /**
+     * Raw angle in the sensor's native counts: 0..4095 from the AS5600 ANGLE
+     * register, 0..5759 from the TMAG5273 CORDIC angle engine.
+     */
     uint16_t getRawAngle() const;
 
     /** Raw angle normalized to [0.0, 1.0]. */
     float getNormalizedAngle() const;
 
+    /** Current shaft angle in degrees, 0.0 .. 360.0. */
+    float getAngleDegrees() const;
+
     /**
-     * Cumulative position in encoder ticks, with wrap-around unwrapped across
+     * Cumulative position in encoder counts, with wrap-around unwrapped across
      * multiple revolutions. Resets to 0 (or a value you supply) via
      * resetCumulativePosition().
      */
@@ -103,9 +156,34 @@ public:
     /** True if begin() detected the sensor on the bus. */
     bool isConnected() const;
 
+    /** Which sensor this instance is configured for. */
+    Sensor getSensor() const;
+
+    /** Human-readable sensor name, "AS5600" or "TMAG5273". */
+    const char *getSensorName() const;
+
+    /** The 7-bit I2C address in use, with the "0 = default" sentinel resolved. */
+    uint8_t getI2CAddress() const;
+
+    /** Native counts per full revolution: 4096 (AS5600) or 5760 (TMAG5273). */
+    uint16_t getCountsPerRevolution() const;
+
     /** Coarse qualitative description of the current turn speed. */
     enum class VelocityZone { Idle, Low, Mid, High };
     VelocityZone getVelocityZone() const;
+
+    // ------------------------------------------------------------------
+    // TMAG5273 extras
+    // ------------------------------------------------------------------
+
+    /**
+     * The underlying TMAG5273 driver. Only meaningful when the encoder is
+     * configured for Sensor::TMAG5273 — update() keeps it fed, so a sketch can
+     * read the magnetic axes, temperature, magnitude and diagnostics straight
+     * off it without a second I2C transaction.
+     */
+    TMAG5273 &tmag();
+    const TMAG5273 &tmag() const;
 
     // ------------------------------------------------------------------
     // Velocity-sensitive parameter control
@@ -150,13 +228,19 @@ private:
     static constexpr uint8_t REG_RAW_ANGLE = 0x0C;
     static constexpr uint8_t REG_ANGLE     = 0x0E;
 
-    // 12-bit sensor -> 4096 ticks per revolution.
-    static constexpr uint16_t TICKS_PER_REV    = 4096;
-    static constexpr int16_t  WRAP_THRESHOLD   = TICKS_PER_REV / 2; // 2048
-    static constexpr float    RAW_TO_NORMALIZED = 1.0f / 4095.0f;
-    static constexpr float    RAW_TO_DEGREES    = 360.0f / 4096.0f;
+    // AS5600 is a 12-bit sensor -> 4096 counts per revolution.
+    static constexpr uint16_t AS5600_COUNTS_PER_REV = 4096;
 
-    Config _cfg;
+    Config    _cfg;
+    TwoWire  *_wire;
+    TMAG5273  _tmag;
+
+    // Per-sensor geometry, resolved in the constructor so the shared position
+    // and velocity math works in whichever tick space the part reports.
+    uint16_t _countsPerRev;
+    int16_t  _wrapThreshold;
+    float    _countsToDegrees;
+    float    _countsToNormalized;
 
     bool          _connected;
     uint16_t      _rawAngle;
@@ -168,13 +252,20 @@ private:
     unsigned long _lastSpeedTime;
     mutable float _lastCurvedSpeed;
 
+    // Fill in _countsPerRev and friends from _cfg.sensor, and resolve the
+    // "0 means default" I2C address sentinel.
+    void configureForSensor();
+
     // I2C helpers
-    uint16_t readRegister16(uint8_t reg) const;
+    uint16_t readAS5600Register16(uint8_t reg) const;
     bool     checkConnection();
 
-    // Unwrap the 12-bit wrap-around between two raw angle samples so that
-    // multi-turn motion is reported as a signed delta in [-2048, 2047].
-    static int16_t unwrapAngleDelta(uint16_t current, uint16_t previous);
+    // Read the current angle from whichever sensor is configured.
+    uint16_t readAngle();
+
+    // Unwrap the wrap-around between two raw angle samples so that multi-turn
+    // motion is reported as a signed delta of at most half a revolution.
+    int16_t unwrapAngleDelta(uint16_t current, uint16_t previous) const;
 
     // Internal update steps
     void updateCumulativePosition();
