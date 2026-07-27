@@ -1,8 +1,8 @@
 # EncoderAlchemy
 
-A knob is still a hand on a shaft. This is the Arduino driver we ship with our
-**[ENCODER NAME]** magnetic encoder — tuned for instruments you play rather than
-things you program.
+ This is the Arduino driver we ship with our magnetic encoder known as the
+Velocity Encoder.
+
 
 It does the basics you would expect from a magnetic encoder library, and one
 thing you probably would not: it knows how fast you are turning. Slow motion
