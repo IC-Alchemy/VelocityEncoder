@@ -1,7 +1,7 @@
 # EncoderAlchemy
 
- This is the Arduino driver we ship with our magnetic encoder known as the
-Velocity Encoder.
+ This is an Arduino driver for a velocity aware magnetic encoder.  You could think of it as a hi tech knob that you can customize to feel how ever you want.
+This is also the firmware we ship with our Velocity Encoder (More info soon)
 
 
 It does the basics you would expect from a magnetic encoder library, and one
