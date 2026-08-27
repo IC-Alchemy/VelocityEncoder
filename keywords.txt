@@ -36,6 +36,10 @@ getI2CAddress	KEYWORD2
 getCountsPerRevolution	KEYWORD2
 getVelocityZone	KEYWORD2
 getParameterIncrement	KEYWORD2
+takeParameterIncrement	KEYWORD2
+pendingTicks	KEYWORD2
+clearPendingTicks	KEYWORD2
+getVelocityScale	KEYWORD2
 mapPositionToRange	KEYWORD2
 resetCumulativePosition	KEYWORD2
 tmag	KEYWORD2

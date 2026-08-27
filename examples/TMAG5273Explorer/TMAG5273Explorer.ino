@@ -8,7 +8,7 @@
  * a pile of status and configuration registers. That is far too much to put on
  * one 128x64 panel and still be readable, so this sketch does not try. Instead
  * it draws ten separate views of the same live data — some numeric, most
- * graphical — and cycles between them with a single button.
+ * graphical — with buttons for display and sensor configuration.
  *
  *    1  OVERVIEW    Angle, field strength, temperature and all three axes
  *    2  COMPASS     Circular dial, needle, turn counter and speed
@@ -22,8 +22,11 @@
  *   10  REGISTERS   Hex dump of the whole register map plus a live bit texture
  *
  * Controls
- *   Short press on GP0  cycle to the next screen
- *   Long press on GP0   reset peak hold, min/max, history and turn counter
+ *   GP11  cycle averaging
+ *   GP12  cycle screens (long press resets statistics and history)
+ *   GP13  cycle angle pairs
+ *   GP14  cycle magnetic channels
+ *   GP15  cycle low/high ranges
  *
  * Wiring
  *   TMAG5273 VCC -> 3.3V   (1.7-3.6V part; do not feed it 5V)
@@ -32,11 +35,13 @@
  *   TMAG5273 SCL -> board SCL        (shared with the OLED)
  *   TMAG5273 TEST -> GND
  *   SH1106G OLED  -> same SDA/SCL, address 0x3C
- *   Pushbutton    -> between GP0 and GND (the pin is driven INPUT_PULLUP,
- *                    so no external resistor is needed)
+ *   Pushbuttons    -> between GP11..GP15 and GND (the pins use INPUT_PULLUP,
+ *                    so no external resistors are needed)
  *
- * The default I2C address here is 0x35, which is what the TMAG5273A parts
- * ship with. For a B, C or D part change SENSOR_ADDRESS below.
+ * The address below is 0x22, the TMAG5273B parts fitted on the Velocity
+ * Encoder board and the library default. For an A, C or D part change
+ * SENSOR_ADDRESS below, or run the I2CBusCheck example to find out which
+ * one you have.
  */
 
 #include <MagEncoder.h>
@@ -56,8 +61,8 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
-static const int      BUTTON_PIN     = 0;                    // GP0, INPUT_PULLUP
-static const uint8_t  SENSOR_ADDRESS = TMAG5273::ADDRESS_A;  // 0x35
+static const uint8_t  BUTTON_PINS[]  = { 11, 12, 13, 14, 15 };
+static const uint8_t  SENSOR_ADDRESS = TMAG5273::ADDRESS_B;  // 0x22
 static const uint8_t  OLED_ADDRESS   = AlchemyOled::DEFAULT_ADDR;
 
 // A full 128x64 frame over I2C costs a few milliseconds, so the display is
@@ -67,6 +72,7 @@ static const unsigned long DRAW_INTERVAL_MS   = 50;
 
 static const unsigned long DEBOUNCE_MS   = 25;
 static const unsigned long LONG_PRESS_MS = 700;
+static const unsigned long CHANGE_DISPLAY_MS = 800;
 
 // ---------------------------------------------------------------------------
 // Objects and state
@@ -92,7 +98,7 @@ static int16_t  histTemp[TEMP_LEN];
 static uint16_t tempHead = 0;
 
 // Short persistence trail for the vectorscope, stored normalized to +/-127.
-static const uint8_t TRAIL_LEN = 20;
+static const uint8_t TRAIL_LEN = 33;
 static int8_t  trailX[TRAIL_LEN];
 static int8_t  trailY[TRAIL_LEN];
 static uint8_t trailCount = 0;
@@ -115,6 +121,38 @@ static uint8_t regMap[TMAG5273::REGISTER_COUNT];
 
 static uint8_t currentScreen = 0;
 static bool    sensorPresent = false;
+
+enum ButtonAction : uint8_t
+{
+    CYCLE_AVERAGING,
+    CYCLE_SCREEN,
+    CYCLE_ANGLE_PAIR,
+    CYCLE_MAG_CHANNELS,
+    CYCLE_RANGE
+};
+
+struct ButtonState
+{
+    bool          lastRaw;
+    bool          stable;
+    unsigned long lastChange;
+    unsigned long pressedAt;
+    bool          longFired;
+};
+
+static ButtonState buttonStates[] = {
+    { HIGH, HIGH, 0, 0, false },
+    { HIGH, HIGH, 0, 0, false },
+    { HIGH, HIGH, 0, 0, false },
+    { HIGH, HIGH, 0, 0, false },
+    { HIGH, HIGH, 0, 0, false }
+};
+
+static const uint8_t BUTTON_COUNT = sizeof(BUTTON_PINS) / sizeof(BUTTON_PINS[0]);
+
+static const char  *changeTitle   = nullptr;
+static const char  *changeValue   = nullptr;
+static unsigned long changeShownAt = 0;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -209,6 +247,45 @@ static const char *averagingName(TMAG5273::ConvAvg averaging)
         case TMAG5273::ConvAvg::X32: return "32x";
     }
     return "?";
+}
+
+static const char *anglePairName(TMAG5273::AnglePair pair)
+{
+    switch (pair)
+    {
+        case TMAG5273::AnglePair::Off: return "OFF";
+        case TMAG5273::AnglePair::XY:  return "XY";
+        case TMAG5273::AnglePair::YZ:  return "YZ";
+        case TMAG5273::AnglePair::XZ:  return "XZ";
+    }
+    return "?";
+}
+
+static const char *magChannelsName(TMAG5273::MagChannels channels)
+{
+    switch (channels)
+    {
+        case TMAG5273::MagChannels::Off: return "OFF";
+        case TMAG5273::MagChannels::X:   return "X";
+        case TMAG5273::MagChannels::Y:   return "Y";
+        case TMAG5273::MagChannels::XY:  return "XY";
+        case TMAG5273::MagChannels::Z:   return "Z";
+        case TMAG5273::MagChannels::ZX:  return "ZX";
+        case TMAG5273::MagChannels::YZ:  return "YZ";
+        case TMAG5273::MagChannels::XYZ: return "XYZ";
+        case TMAG5273::MagChannels::XYX: return "XYX";
+        case TMAG5273::MagChannels::YXY: return "YXY";
+        case TMAG5273::MagChannels::YZY: return "YZY";
+        case TMAG5273::MagChannels::XZX: return "XZX";
+    }
+    return "?";
+}
+
+static void showChange(const char *title, const char *value)
+{
+    changeTitle   = title;
+    changeValue   = value;
+    changeShownAt = millis();
 }
 
 /** Label plus a checkbox, filled when the flag is set. */
@@ -815,57 +892,106 @@ static void sampleSensor()
         mag().readRegisterMap(regMap);
 }
 
-static void pollButton()
+static void handleButtonPress(uint8_t action)
 {
-    static bool          lastRaw    = HIGH;
-    static bool          stable     = HIGH;
-    static unsigned long lastChange = 0;
-    static unsigned long pressedAt  = 0;
-    static bool          longFired  = false;
-
-    const bool          raw = digitalRead(BUTTON_PIN);
-    const unsigned long now = millis();
-
-    if (raw != lastRaw)
+    if (action == CYCLE_AVERAGING)
     {
-        lastRaw    = raw;
-        lastChange = now;
+        const uint8_t value = static_cast<uint8_t>(mag().config().averaging);
+        const TMAG5273::ConvAvg next =
+            static_cast<TMAG5273::ConvAvg>((value + 1) % 6);
+        mag().setAveraging(next);
+        showChange("AVERAGING", averagingName(next));
     }
-
-    if (now - lastChange < DEBOUNCE_MS)
-        return;
-
-    if (raw == stable)
+    else if (action == CYCLE_SCREEN)
     {
-        // Held down: fire the long-press action once, without waiting for the
-        // release, so the reset feels immediate.
-        if (stable == LOW && !longFired && (now - pressedAt) >= LONG_PRESS_MS)
-        {
-            longFired = true;
-            resetStatistics();
-        }
-        return;
-    }
-
-    stable = raw;
-
-    if (stable == LOW)
-    {
-        pressedAt = now;
-        longFired = false;
-    }
-    else if (!longFired)
-    {
+        changeTitle = nullptr;
         currentScreen = static_cast<uint8_t>((currentScreen + 1) % SCREEN_COUNT);
 
-        // Entering the register screen: fill the map before it is first drawn.
         if (currentScreen == SCREEN_COUNT - 1)
             mag().readRegisterMap(regMap);
+    }
+    else if (action == CYCLE_ANGLE_PAIR)
+    {
+        const uint8_t value = static_cast<uint8_t>(mag().config().anglePair);
+        const TMAG5273::AnglePair next =
+            static_cast<TMAG5273::AnglePair>((value + 1) % 4);
+        mag().setAnglePair(next);
+        showChange("ANGLE PAIR", anglePairName(next));
+    }
+    else if (action == CYCLE_MAG_CHANNELS)
+    {
+        const uint8_t value = static_cast<uint8_t>(mag().config().channels);
+        const TMAG5273::MagChannels next =
+            static_cast<TMAG5273::MagChannels>((value + 1) % 12);
+        mag().setMagChannels(next);
+        showChange("MAG CHANNELS", magChannelsName(next));
+    }
+    else
+    {
+        const TMAG5273::Range next = mag().config().rangeXY == TMAG5273::Range::Low
+                                         ? TMAG5273::Range::High
+                                         : TMAG5273::Range::Low;
+        mag().setRanges(next, next);
+        showChange("RANGE", next == TMAG5273::Range::Low ? "LOW" : "HIGH");
+    }
+}
+
+static void pollButtons()
+{
+    const unsigned long now = millis();
+
+    for (uint8_t i = 0; i < BUTTON_COUNT; ++i)
+    {
+        ButtonState &button = buttonStates[i];
+        const bool raw = digitalRead(BUTTON_PINS[i]);
+
+        if (raw != button.lastRaw)
+        {
+            button.lastRaw    = raw;
+            button.lastChange = now;
+        }
+
+        if (now - button.lastChange < DEBOUNCE_MS)
+            continue;
+
+        if (raw == button.stable)
+        {
+            if (i == CYCLE_SCREEN && button.stable == LOW &&
+                !button.longFired && (now - button.pressedAt) >= LONG_PRESS_MS)
+            {
+                button.longFired = true;
+                resetStatistics();
+            }
+            continue;
+        }
+
+        button.stable = raw;
+
+        if (button.stable == LOW)
+        {
+            button.pressedAt = now;
+            button.longFired = false;
+        }
+        else if (!button.longFired)
+        {
+            handleButtonPress(i);
+        }
     }
 }
 
 static void drawFrame()
 {
+    if (changeTitle != nullptr && millis() - changeShownAt < CHANGE_DISPLAY_MS)
+    {
+        oled.clear();
+        oled.title(changeTitle);
+        oled.textCentered(27, changeValue, 3);
+        oled.show();
+        return;
+    }
+
+    changeTitle = nullptr;
+
     char counter[8];
     snprintf(counter, sizeof(counter), "%u/%u",
              static_cast<unsigned>(currentScreen + 1),
@@ -881,10 +1007,92 @@ static void drawFrame()
 // setup / loop
 // ---------------------------------------------------------------------------
 
+/**
+ * Explain a failed begin() instead of just reporting it.
+ *
+ * TMAG5273::begin() gives up at one of three places, and they need very
+ * different fixes: the address does not acknowledge at all, the address
+ * acknowledges but the register read fails, or the read works and the
+ * manufacturer ID is wrong. This walks the four addresses the family ships
+ * with and reports what each one does, which also catches the common case of
+ * holding a B, C or D part while the sketch asks for an A.
+ */
+static void reportSensorFailure()
+{
+    static const uint8_t candidates[] = {
+        TMAG5273::ADDRESS_A, TMAG5273::ADDRESS_B,
+        TMAG5273::ADDRESS_C, TMAG5273::ADDRESS_D
+    };
+
+    Serial.println();
+    Serial.println("Probing the TMAG5273 address family:");
+
+    for (uint8_t i = 0; i < sizeof(candidates); ++i)
+    {
+        const uint8_t address = candidates[i];
+
+        Serial.print("  0x");
+        Serial.print(address, HEX);
+        Serial.print("  ");
+
+        Wire.beginTransmission(address);
+        if (Wire.endTransmission() != 0)
+        {
+            Serial.println("no ACK");
+            continue;
+        }
+
+        Serial.print("ACK, ");
+
+        // DEVICE_ID (0x0D), then MANUFACTURER_ID LSB (0x0E) and MSB (0x0F).
+        Wire.beginTransmission(address);
+        Wire.write(static_cast<uint8_t>(TMAG5273::REG_DEVICE_ID));
+        if (Wire.endTransmission(false) != 0 || Wire.requestFrom((int)address, 3) != 3)
+        {
+            Serial.println("but the register read failed (repeated START refused?)");
+            continue;
+        }
+
+        const uint8_t deviceId = static_cast<uint8_t>(Wire.read());
+        const uint8_t mfgLsb   = static_cast<uint8_t>(Wire.read());
+        const uint8_t mfgMsb   = static_cast<uint8_t>(Wire.read());
+        const uint16_t mfgId   = static_cast<uint16_t>(mfgMsb) << 8 | mfgLsb;
+
+        Serial.print("DEVICE_ID 0x");
+        Serial.print(deviceId, HEX);
+        Serial.print(", MFG_ID 0x");
+        Serial.print(mfgId, HEX);
+
+        if (mfgId == TMAG5273::MANUFACTURER_ID)
+        {
+            Serial.println("  <-- a real TMAG5273 lives here");
+            Serial.print("      Set SENSOR_ADDRESS to 0x");
+            Serial.print(address, HEX);
+            Serial.println(" and rebuild.");
+        }
+        else
+        {
+            Serial.println("  (expected 0x5449, so this is some other chip)");
+        }
+    }
+
+    Serial.println();
+}
+
 void setup()
 {
     Serial.begin(115200);
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+    // Boards with native USB re-enumerate after an upload, and the serial
+    // monitor takes a moment to reattach. Without this wait every diagnostic
+    // printed during setup() is sent into a void and the port looks dead.
+    // The timeout keeps the sketch usable when nothing is listening at all.
+    while (!Serial && millis() < 3000)
+    {
+    }
+
+    for (uint8_t i = 0; i < BUTTON_COUNT; ++i)
+        pinMode(BUTTON_PINS[i], INPUT_PULLUP);
 
     const bool oledReady = oled.begin(OLED_ADDRESS);
     if (!oledReady)
@@ -900,9 +1108,10 @@ void setup()
     cfg.tmag.channels      = TMAG5273::MagChannels::XYZ;
     cfg.tmag.enableTemp    = true;
     cfg.tmag.anglePair     = TMAG5273::AnglePair::XY;
-    cfg.tmag.averaging     = TMAG5273::ConvAvg::X4;
+    cfg.tmag.averaging     = TMAG5273::ConvAvg::X32;
     cfg.tmag.operatingMode = TMAG5273::OperatingMode::Continuous;
     cfg.tmag.lowNoiseMode  = true;
+    cfg.tmag.rangeZ  = TMAG5273::Range::High;
 
     encoder = MagEncoder(cfg);
     sensorPresent = encoder.begin();
@@ -911,6 +1120,7 @@ void setup()
     {
         Serial.print("TMAG5273 not found at 0x");
         Serial.println(SENSOR_ADDRESS, HEX);
+        reportSensorFailure();
 
         if (oledReady)
         {
@@ -924,9 +1134,13 @@ void setup()
             oled.show();
         }
 
+        // Repeat the probe rather than halting silently. A monitor opened late,
+        // or reopened after a reset, still gets the full diagnostic, and
+        // re-seating the sensor's wiring shows up on the next pass.
         while (true)
         {
-            delay(1000);
+            delay(5000);
+            reportSensorFailure();
         }
     }
 
@@ -937,7 +1151,7 @@ void setup()
     Serial.print(", range +/-");
     Serial.print(mag().getRangeXY(), 0);
     Serial.println(" mT");
-    Serial.println("Short press GP0 to change screen, long press to reset stats.");
+    Serial.println("GP11 averaging, GP12 screen, GP13 angle, GP14 channels, GP15 range.");
 
     mag().readRegisterMap(regMap);
     resetStatistics();
@@ -951,7 +1165,7 @@ void loop()
     static unsigned long lastSample = 0;
     static unsigned long lastDraw   = 0;
 
-    pollButton();
+    pollButtons();
 
     const unsigned long now = millis();
 

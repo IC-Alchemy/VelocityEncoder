@@ -32,10 +32,10 @@
 #define SENSOR_AS5600   0
 #define SENSOR_TMAG5273 1
 
-#define SENSOR_CHOICE SENSOR_AS5600
+#define SENSOR_CHOICE SENSOR_TMAG5273
 
 // --- Optional OLED readout -------------------------------------------------
-#define ENABLE_OLED 0
+#define ENABLE_OLED 1
 
 #if ENABLE_OLED
 // The Adafruit headers are named here, not just inside AlchemyOled.h, because
@@ -115,9 +115,11 @@ void setup()
 
 #if SENSOR_CHOICE == SENSOR_TMAG5273
     cfg.sensor = MagEncoder::Sensor::TMAG5273;
-    // Leaving i2cAddress at 0 picks the sensor's own default (0x35 for the
-    // TMAG5273A parts). Set it explicitly for a B/C/D part:
-    //   cfg.i2cAddress = TMAG5273::ADDRESS_B;
+    // Leaving i2cAddress at 0 picks the sensor's own default (0x22, the
+    // TMAG5273B parts fitted on the Velocity Encoder board). Spelled out
+    // here so the address is visible; set ADDRESS_A / _C / _D for a
+    // different part.
+    cfg.i2cAddress = TMAG5273::ADDRESS_B;
 
     // The knob only needs the two axes the CORDIC angle engine uses, so turn
     // the third one off and spend the saved conversion time on averaging.
