@@ -3,6 +3,14 @@
  This is the Arduino driver we ship with our magnetic encoder known as the
 Velocity Encoder.
 
+## Velocity Encoder
+
+<p>
+ <img src="Images/PXL_20260831_234225587.PORTRAIT.jpg" alt="Velocity Encoder" width="32%">
+ <img src="Images/PXL_20260831_234255395.PORTRAIT.jpg" alt="Velocity Encoder" width="32%">
+ <img src="Images/PXL_20260831_234347774.PORTRAIT.jpg" alt="Velocity Encoder" width="32%">
+</p>
+
 
 It does the basics you would expect from a magnetic encoder library, and one
 thing you probably would not: it knows how fast you are turning. Slow motion
