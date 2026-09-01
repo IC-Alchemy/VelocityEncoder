@@ -7,7 +7,6 @@ Velocity Encoder.
 
 <p>
  <img src="Images/PXL_20260831_234225587.PORTRAIT.jpg" alt="Velocity Encoder hardware photograph, view 1" width="32%">
- <img src="Images/PXL_20260831_234255395.PORTRAIT.jpg" alt="Velocity Encoder hardware photograph, view 2" width="32%">
  <img src="Images/PXL_20260831_234347774.PORTRAIT.jpg" alt="Velocity Encoder hardware photograph, view 3" width="32%">
 </p>
 
