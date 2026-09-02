@@ -12,8 +12,8 @@ namespace
     constexpr unsigned long MIN_SPEED_DT_MS = 8;
 
     // Speed (deg/s) thresholds that select the EMA alpha.
-    constexpr float SLOW_DPS   = 30.0f;
-    constexpr float MEDIUM_DPS = 70.0f;
+    constexpr float SLOW_DPS   = 90.0f;
+    constexpr float MEDIUM_DPS = 120.0f;
 
     // EMA factors: less smoothing for faster movements.
     constexpr float SMOOTH_ALPHA_SLOW   = 0.3f;
@@ -21,7 +21,7 @@ namespace
     constexpr float SMOOTH_ALPHA_FAST   = 0.6f;
 
     // Below this filtered speed the output is attenuated to suppress jitter.
-    constexpr float NOISE_GATE_DPS = 1.0f;
+    constexpr float NOISE_GATE_DPS = 8.0f;
 
     MagEncoder::Config configForSensor(MagEncoder::Sensor sensor)
     {
