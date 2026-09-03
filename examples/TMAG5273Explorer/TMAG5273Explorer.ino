@@ -7,7 +7,7 @@
  * temperature sensor, a CORDIC angle engine, a resultant vector magnitude, and
  * a pile of status and configuration registers. That is far too much to put on
  * one 128x64 panel and still be readable, so this sketch does not try. Instead
- * it draws ten separate views of the same live data — some numeric, most
+ * it draws eight separate views of the same live data — some numeric, most
  * graphical — and cycles between them with a single button.
  *
  *    1  OVERVIEW    Angle, field strength, temperature and all three axes
@@ -18,12 +18,11 @@
  *    6  3D          Isometric axes with the field vector drawn in space
  *    7  THERMAL     Big temperature read, thermometer and history sparkline
  *    8  RADAR       Field magnitude as a proximity radar with peak hold
- *    9  DIAG        Conversion and device status flags, IDs, addresses
- *   10  REGISTERS   Hex dump of the whole register map plus a live bit texture
+
  *
  * Controls
- *   Short press on GP0  cycle to the next screen
- *   Long press on GP0   reset peak hold, min/max, history and turn counter
+ *   Short press on GP7  cycle to the next screen
+ *   Long press on GP7   reset peak hold, min/max, history and turn counter
  *
  * Wiring
  *   TMAG5273 VCC -> 3.3V   (1.7-3.6V part; do not feed it 5V)
@@ -32,7 +31,7 @@
  *   TMAG5273 SCL -> board SCL        (shared with the OLED)
  *   TMAG5273 TEST -> GND
  *   SH1106G OLED  -> same SDA/SCL, address 0x3C
- *   Pushbutton    -> between GP0 and GND (the pin is driven INPUT_PULLUP,
+ *   Pushbutton     -> between GP7 and GND (the pin is driven INPUT_PULLUP,
  *                    so no external resistor is needed)
  *
  * The default I2C address here is 0x35, which is what the TMAG5273A parts
@@ -56,8 +55,8 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
-static const int      BUTTON_PIN     = 0;                    // GP0, INPUT_PULLUP
-static const uint8_t  SENSOR_ADDRESS = TMAG5273::ADDRESS_A;  // 0x35
+static const int      BUTTON_PIN     = 7;                    // GP7, INPUT_PULLUP
+static const uint8_t  SENSOR_ADDRESS = TMAG5273::ADDRESS_B;  // 0x22
 static const uint8_t  OLED_ADDRESS   = AlchemyOled::DEFAULT_ADDR;
 
 // A full 128x64 frame over I2C costs a few milliseconds, so the display is
@@ -92,7 +91,7 @@ static int16_t  histTemp[TEMP_LEN];
 static uint16_t tempHead = 0;
 
 // Short persistence trail for the vectorscope, stored normalized to +/-127.
-static const uint8_t TRAIL_LEN = 20;
+static const uint8_t TRAIL_LEN = 33;
 static int8_t  trailX[TRAIL_LEN];
 static int8_t  trailY[TRAIL_LEN];
 static uint8_t trailCount = 0;
@@ -110,8 +109,6 @@ static bool statsSeeded = false;
 
 static const float TEMP_VALID_MIN = -45.0f;
 static const float TEMP_VALID_MAX = 180.0f;
-
-static uint8_t regMap[TMAG5273::REGISTER_COUNT];
 
 static uint8_t currentScreen = 0;
 static bool    sensorPresent = false;
@@ -209,17 +206,6 @@ static const char *averagingName(TMAG5273::ConvAvg averaging)
         case TMAG5273::ConvAvg::X32: return "32x";
     }
     return "?";
-}
-
-/** Label plus a checkbox, filled when the flag is set. */
-static void flagRow(int x, int y, const char *label, bool on)
-{
-    oled.atPixel(x, y + 1, 1).print(label);
-
-    const int boxX = x + 52;
-    oled.gfx().drawRect(boxX, y, 7, 7, AlchemyOled::WHITE);
-    if (on)
-        oled.gfx().fillRect(boxX + 2, y + 2, 3, 3, AlchemyOled::WHITE);
 }
 
 static void resetStatistics()
@@ -650,86 +636,6 @@ static void screenRadar()
 }
 
 // ---------------------------------------------------------------------------
-// Screen 9 — DIAG
-// The status registers, decoded. Every latched error bit the device can raise
-// is here; a long press clears them along with the rest of the statistics.
-// ---------------------------------------------------------------------------
-static void screenDiagnostics()
-{
-    Adafruit_SH1106G &g = oled.gfx();
-
-    const TMAG5273::ConversionStatus &conv   = mag().getConversionStatus();
-    const TMAG5273::DeviceStatus     &device = mag().getDeviceStatus();
-
-    flagRow(0, 11, "RESULT",  conv.dataReady);
-    flagRow(0, 20, "DIAGFAIL", conv.diagFail);
-    flagRow(0, 29, "POR",     conv.powerOnReset);
-
-    oled.atPixel(0, 39, 1).print("SET  ");
-    g.print(conv.setCount);
-    oled.atPixel(0, 48, 1).print("VER  ");
-    g.print(mag().getVersionName());
-    oled.atPixel(0, 57, 1).print("ADR  0x");
-    g.print(mag().getI2CAddress(), HEX);
-
-    oled.dottedVLine(62, 10, 52, 2);
-
-    flagRow(66, 11, "INT PIN", device.intPinHigh);
-    flagRow(66, 20, "OSC ER",  device.oscError);
-    flagRow(66, 29, "INT ER",  device.intError);
-    flagRow(66, 38, "OTP CRC", device.otpCrcError);
-    flagRow(66, 47, "VCC UV",  device.vccUnderVolt);
-
-    oled.atPixel(66, 57, 1).print("MFR ");
-    g.print(mag().getManufacturerId(), HEX);
-}
-
-// ---------------------------------------------------------------------------
-// Screen 10 — REGISTERS
-// The whole register map as hex, and underneath it the same 29 bytes drawn as
-// a bit texture: one column per register, MSB at the top. Config bits hold
-// still; result bits shimmer. It is the fastest way to see the device working.
-// ---------------------------------------------------------------------------
-static void screenRegisters()
-{
-    Adafruit_SH1106G &g = oled.gfx();
-
-    for (uint8_t row = 0; row < 4; ++row)
-    {
-        const uint8_t base = static_cast<uint8_t>(row * 8);
-
-        char line[24];
-        char *p = line;
-        p += sprintf(p, "%02X:", base);
-
-        for (uint8_t i = 0; i < 8; ++i)
-        {
-            const uint8_t offset = static_cast<uint8_t>(base + i);
-            if (offset >= TMAG5273::REGISTER_COUNT)
-                break;
-            p += sprintf(p, "%02X", regMap[offset]);
-        }
-        *p = '\0';
-
-        oled.atPixel(0, 11 + row * 8, 1).print(line);
-    }
-
-    g.drawFastHLine(0, 44, 128, AlchemyOled::WHITE);
-
-    // Bit texture: one column per register, MSB at the top, a 3x2 block per set
-    // bit. Configuration bits hold still while result bits shimmer, which makes
-    // a working device obvious at a glance.
-    for (uint8_t reg = 0; reg < TMAG5273::REGISTER_COUNT; ++reg)
-    {
-        for (uint8_t bit = 0; bit < 8; ++bit)
-        {
-            if (regMap[reg] & (0x80 >> bit))
-                g.fillRect(2 + reg * 4, 47 + bit * 2, 3, 2, AlchemyOled::WHITE);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Screen table
 // ---------------------------------------------------------------------------
 
@@ -747,9 +653,8 @@ static const Screen SCREENS[] = {
     { "SCOPE",     screenScope       },
     { "3D FIELD",  screen3D          },
     { "THERMAL",   screenThermal     },
-    { "RADAR",     screenRadar       },
-    { "DIAG",      screenDiagnostics },
-    { "REGISTERS", screenRegisters   }
+    { "RADAR",     screenRadar       }
+
 };
 
 static const uint8_t SCREEN_COUNT = sizeof(SCREENS) / sizeof(SCREENS[0]);
@@ -809,10 +714,6 @@ static void sampleSensor()
     if (trailCount < TRAIL_LEN)
         ++trailCount;
 
-    // The register screen is the only one that needs the full map, and it is a
-    // 29-byte read, so only pay for it when that screen is up.
-    if (currentScreen == SCREEN_COUNT - 1)
-        mag().readRegisterMap(regMap);
 }
 
 static void pollButton()
@@ -857,10 +758,6 @@ static void pollButton()
     else if (!longFired)
     {
         currentScreen = static_cast<uint8_t>((currentScreen + 1) % SCREEN_COUNT);
-
-        // Entering the register screen: fill the map before it is first drawn.
-        if (currentScreen == SCREEN_COUNT - 1)
-            mag().readRegisterMap(regMap);
     }
 }
 
@@ -881,9 +778,90 @@ static void drawFrame()
 // setup / loop
 // ---------------------------------------------------------------------------
 
+/**
+ * Explain a failed begin() instead of just reporting it.
+ *
+ * TMAG5273::begin() gives up at one of three places, and they need very
+ * different fixes: the address does not acknowledge at all, the address
+ * acknowledges but the register read fails, or the read works and the
+ * manufacturer ID is wrong. This walks the four addresses the family ships
+ * with and reports what each one does, which also catches the common case of
+ * holding a B, C or D part while the sketch asks for an A.
+ */
+static void reportSensorFailure()
+{
+    static const uint8_t candidates[] = {
+        TMAG5273::ADDRESS_A, TMAG5273::ADDRESS_B,
+        TMAG5273::ADDRESS_C, TMAG5273::ADDRESS_D
+    };
+
+    Serial.println();
+    Serial.println("Probing the TMAG5273 address family:");
+
+    for (uint8_t i = 0; i < sizeof(candidates); ++i)
+    {
+        const uint8_t address = candidates[i];
+
+        Serial.print("  0x");
+        Serial.print(address, HEX);
+        Serial.print("  ");
+
+        Wire.beginTransmission(address);
+        if (Wire.endTransmission() != 0)
+        {
+            Serial.println("no ACK");
+            continue;
+        }
+
+        Serial.print("ACK, ");
+
+        // DEVICE_ID (0x0D), then MANUFACTURER_ID LSB (0x0E) and MSB (0x0F).
+        Wire.beginTransmission(address);
+        Wire.write(static_cast<uint8_t>(TMAG5273::REG_DEVICE_ID));
+        if (Wire.endTransmission(false) != 0 || Wire.requestFrom((int)address, 3) != 3)
+        {
+            Serial.println("but the register read failed (repeated START refused?)");
+            continue;
+        }
+
+        const uint8_t deviceId = static_cast<uint8_t>(Wire.read());
+        const uint8_t mfgLsb   = static_cast<uint8_t>(Wire.read());
+        const uint8_t mfgMsb   = static_cast<uint8_t>(Wire.read());
+        const uint16_t mfgId   = static_cast<uint16_t>(mfgMsb) << 8 | mfgLsb;
+
+        Serial.print("DEVICE_ID 0x");
+        Serial.print(deviceId, HEX);
+        Serial.print(", MFG_ID 0x");
+        Serial.print(mfgId, HEX);
+
+        if (mfgId == TMAG5273::MANUFACTURER_ID)
+        {
+            Serial.println("  <-- a real TMAG5273 lives here");
+            Serial.print("      Set SENSOR_ADDRESS to 0x");
+            Serial.print(address, HEX);
+            Serial.println(" and rebuild.");
+        }
+        else
+        {
+            Serial.println("  (expected 0x5449, so this is some other chip)");
+        }
+    }
+
+    Serial.println();
+}
+
 void setup()
 {
     Serial.begin(115200);
+
+    // Boards with native USB re-enumerate after an upload, and the serial
+    // monitor takes a moment to reattach. Without this wait every diagnostic
+    // printed during setup() is sent into a void and the port looks dead.
+    // The timeout keeps the sketch usable when nothing is listening at all.
+    while (!Serial && millis() < 3000)
+    {
+    }
+
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
     const bool oledReady = oled.begin(OLED_ADDRESS);
@@ -900,9 +878,10 @@ void setup()
     cfg.tmag.channels      = TMAG5273::MagChannels::XYZ;
     cfg.tmag.enableTemp    = true;
     cfg.tmag.anglePair     = TMAG5273::AnglePair::XY;
-    cfg.tmag.averaging     = TMAG5273::ConvAvg::X4;
+    cfg.tmag.averaging     = TMAG5273::ConvAvg::X32;
     cfg.tmag.operatingMode = TMAG5273::OperatingMode::Continuous;
     cfg.tmag.lowNoiseMode  = true;
+    cfg.tmag.rangeZ  = TMAG5273::Range::High;
 
     encoder = MagEncoder(cfg);
     sensorPresent = encoder.begin();
@@ -911,6 +890,7 @@ void setup()
     {
         Serial.print("TMAG5273 not found at 0x");
         Serial.println(SENSOR_ADDRESS, HEX);
+        reportSensorFailure();
 
         if (oledReady)
         {
@@ -924,9 +904,13 @@ void setup()
             oled.show();
         }
 
+        // Repeat the probe rather than halting silently. A monitor opened late,
+        // or reopened after a reset, still gets the full diagnostic, and
+        // re-seating the sensor's wiring shows up on the next pass.
         while (true)
         {
-            delay(1000);
+            delay(5000);
+            reportSensorFailure();
         }
     }
 
@@ -937,9 +921,8 @@ void setup()
     Serial.print(", range +/-");
     Serial.print(mag().getRangeXY(), 0);
     Serial.println(" mT");
-    Serial.println("Short press GP0 to change screen, long press to reset stats.");
+    Serial.println("Short press GP7 to change screen, long press to reset stats.");
 
-    mag().readRegisterMap(regMap);
     resetStatistics();
 
     if (oledReady)
