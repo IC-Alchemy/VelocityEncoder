@@ -6,7 +6,7 @@ Velocity Encoder.
 ## Velocity Encoder
 
 <p>
- <img src="Images/PXL_20260831_234347774.PORTRAIT.jpg" alt="Velocity Encoder hardware photograph, view 3" width="50%">
+ <img src="Images/PXL_20260831_234347774.PORTRAIT.jpg" alt="Velocity Encoder hardware photograph, view 3" width="33%">
 </p>
 
 
@@ -28,6 +28,10 @@ with a single field:
 
 There is also an optional **SH1106G OLED helper** for building readouts, and an
 example that puts every last thing a TMAG5273 knows onto ten cycling screens.
+
+<p>
+ <img src="Images/PXL_20260831_234050656.jpg" alt="Velocity Encoder  in hand " width="33%">
+</p>
 
 ## Features
 
