@@ -28,6 +28,7 @@
 #define SENSOR_TMAG5273 1
 
 #define SENSOR_CHOICE SENSOR_TMAG5273
+#define SENSOR_CHOICE SENSOR_TMAG5273
 
 // --- Optional OLED readout -------------------------------------------------
 #define ENABLE_OLED 1

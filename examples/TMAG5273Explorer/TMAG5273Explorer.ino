@@ -34,8 +34,10 @@
  *   Pushbutton     -> between GP7 and GND (the pin is driven INPUT_PULLUP,
  *                    so no external resistor is needed)
  *
- * The default I2C address here is 0x35, which is what the TMAG5273A parts
- * ship with. For a B, C or D part change SENSOR_ADDRESS below.
+ * The address below is 0x22, the TMAG5273B parts fitted on the Velocity
+ * Encoder board and the library default. For an A, C or D part change
+ * SENSOR_ADDRESS below, or run the I2CBusCheck example to find out which
+ * one you have.
  */
 
 #include <MagEncoder.h>
@@ -66,6 +68,7 @@ static const unsigned long DRAW_INTERVAL_MS   = 50;
 
 static const unsigned long DEBOUNCE_MS   = 25;
 static const unsigned long LONG_PRESS_MS = 700;
+static const unsigned long CHANGE_DISPLAY_MS = 800;
 
 // ---------------------------------------------------------------------------
 // Objects and state
@@ -92,6 +95,7 @@ static uint16_t tempHead = 0;
 
 // Short persistence trail for the vectorscope, stored normalized to +/-127.
 static const uint8_t TRAIL_LEN = 33;
+static const uint8_t TRAIL_LEN = 33;
 static int8_t  trailX[TRAIL_LEN];
 static int8_t  trailY[TRAIL_LEN];
 static uint8_t trailCount = 0;
@@ -112,6 +116,38 @@ static const float TEMP_VALID_MAX = 180.0f;
 
 static uint8_t currentScreen = 0;
 static bool    sensorPresent = false;
+
+enum ButtonAction : uint8_t
+{
+    CYCLE_AVERAGING,
+    CYCLE_SCREEN,
+    CYCLE_ANGLE_PAIR,
+    CYCLE_MAG_CHANNELS,
+    CYCLE_RANGE
+};
+
+struct ButtonState
+{
+    bool          lastRaw;
+    bool          stable;
+    unsigned long lastChange;
+    unsigned long pressedAt;
+    bool          longFired;
+};
+
+static ButtonState buttonStates[] = {
+    { HIGH, HIGH, 0, 0, false },
+    { HIGH, HIGH, 0, 0, false },
+    { HIGH, HIGH, 0, 0, false },
+    { HIGH, HIGH, 0, 0, false },
+    { HIGH, HIGH, 0, 0, false }
+};
+
+static const uint8_t BUTTON_COUNT = sizeof(BUTTON_PINS) / sizeof(BUTTON_PINS[0]);
+
+static const char  *changeTitle   = nullptr;
+static const char  *changeValue   = nullptr;
+static unsigned long changeShownAt = 0;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -727,26 +763,30 @@ static void pollButton()
     const bool          raw = digitalRead(BUTTON_PIN);
     const unsigned long now = millis();
 
-    if (raw != lastRaw)
+    for (uint8_t i = 0; i < BUTTON_COUNT; ++i)
     {
-        lastRaw    = raw;
-        lastChange = now;
-    }
+        ButtonState &button = buttonStates[i];
+        const bool raw = digitalRead(BUTTON_PINS[i]);
 
-    if (now - lastChange < DEBOUNCE_MS)
-        return;
-
-    if (raw == stable)
-    {
-        // Held down: fire the long-press action once, without waiting for the
-        // release, so the reset feels immediate.
-        if (stable == LOW && !longFired && (now - pressedAt) >= LONG_PRESS_MS)
+        if (raw != button.lastRaw)
         {
-            longFired = true;
-            resetStatistics();
+            button.lastRaw    = raw;
+            button.lastChange = now;
         }
-        return;
-    }
+
+        if (now - button.lastChange < DEBOUNCE_MS)
+            continue;
+
+        if (raw == button.stable)
+        {
+            if (i == CYCLE_SCREEN && button.stable == LOW &&
+                !button.longFired && (now - button.pressedAt) >= LONG_PRESS_MS)
+            {
+                button.longFired = true;
+                resetStatistics();
+            }
+            continue;
+        }
 
     stable = raw;
 
@@ -763,6 +803,17 @@ static void pollButton()
 
 static void drawFrame()
 {
+    if (changeTitle != nullptr && millis() - changeShownAt < CHANGE_DISPLAY_MS)
+    {
+        oled.clear();
+        oled.title(changeTitle);
+        oled.textCentered(27, changeValue, 3);
+        oled.show();
+        return;
+    }
+
+    changeTitle = nullptr;
+
     char counter[8];
     snprintf(counter, sizeof(counter), "%u/%u",
              static_cast<unsigned>(currentScreen + 1),
@@ -777,6 +828,78 @@ static void drawFrame()
 // ---------------------------------------------------------------------------
 // setup / loop
 // ---------------------------------------------------------------------------
+
+/**
+ * Explain a failed begin() instead of just reporting it.
+ *
+ * TMAG5273::begin() gives up at one of three places, and they need very
+ * different fixes: the address does not acknowledge at all, the address
+ * acknowledges but the register read fails, or the read works and the
+ * manufacturer ID is wrong. This walks the four addresses the family ships
+ * with and reports what each one does, which also catches the common case of
+ * holding a B, C or D part while the sketch asks for an A.
+ */
+static void reportSensorFailure()
+{
+    static const uint8_t candidates[] = {
+        TMAG5273::ADDRESS_A, TMAG5273::ADDRESS_B,
+        TMAG5273::ADDRESS_C, TMAG5273::ADDRESS_D
+    };
+
+    Serial.println();
+    Serial.println("Probing the TMAG5273 address family:");
+
+    for (uint8_t i = 0; i < sizeof(candidates); ++i)
+    {
+        const uint8_t address = candidates[i];
+
+        Serial.print("  0x");
+        Serial.print(address, HEX);
+        Serial.print("  ");
+
+        Wire.beginTransmission(address);
+        if (Wire.endTransmission() != 0)
+        {
+            Serial.println("no ACK");
+            continue;
+        }
+
+        Serial.print("ACK, ");
+
+        // DEVICE_ID (0x0D), then MANUFACTURER_ID LSB (0x0E) and MSB (0x0F).
+        Wire.beginTransmission(address);
+        Wire.write(static_cast<uint8_t>(TMAG5273::REG_DEVICE_ID));
+        if (Wire.endTransmission(false) != 0 || Wire.requestFrom((int)address, 3) != 3)
+        {
+            Serial.println("but the register read failed (repeated START refused?)");
+            continue;
+        }
+
+        const uint8_t deviceId = static_cast<uint8_t>(Wire.read());
+        const uint8_t mfgLsb   = static_cast<uint8_t>(Wire.read());
+        const uint8_t mfgMsb   = static_cast<uint8_t>(Wire.read());
+        const uint16_t mfgId   = static_cast<uint16_t>(mfgMsb) << 8 | mfgLsb;
+
+        Serial.print("DEVICE_ID 0x");
+        Serial.print(deviceId, HEX);
+        Serial.print(", MFG_ID 0x");
+        Serial.print(mfgId, HEX);
+
+        if (mfgId == TMAG5273::MANUFACTURER_ID)
+        {
+            Serial.println("  <-- a real TMAG5273 lives here");
+            Serial.print("      Set SENSOR_ADDRESS to 0x");
+            Serial.print(address, HEX);
+            Serial.println(" and rebuild.");
+        }
+        else
+        {
+            Serial.println("  (expected 0x5449, so this is some other chip)");
+        }
+    }
+
+    Serial.println();
+}
 
 /**
  * Explain a failed begin() instead of just reporting it.
@@ -879,8 +1002,10 @@ void setup()
     cfg.tmag.enableTemp    = true;
     cfg.tmag.anglePair     = TMAG5273::AnglePair::XY;
     cfg.tmag.averaging     = TMAG5273::ConvAvg::X32;
+    cfg.tmag.averaging     = TMAG5273::ConvAvg::X32;
     cfg.tmag.operatingMode = TMAG5273::OperatingMode::Continuous;
     cfg.tmag.lowNoiseMode  = true;
+    cfg.tmag.rangeZ  = TMAG5273::Range::High;
     cfg.tmag.rangeZ  = TMAG5273::Range::High;
 
     encoder = MagEncoder(cfg);
@@ -890,6 +1015,7 @@ void setup()
     {
         Serial.print("TMAG5273 not found at 0x");
         Serial.println(SENSOR_ADDRESS, HEX);
+        reportSensorFailure();
         reportSensorFailure();
 
         if (oledReady)
@@ -907,8 +1033,13 @@ void setup()
         // Repeat the probe rather than halting silently. A monitor opened late,
         // or reopened after a reset, still gets the full diagnostic, and
         // re-seating the sensor's wiring shows up on the next pass.
+        // Repeat the probe rather than halting silently. A monitor opened late,
+        // or reopened after a reset, still gets the full diagnostic, and
+        // re-seating the sensor's wiring shows up on the next pass.
         while (true)
         {
+            delay(5000);
+            reportSensorFailure();
             delay(5000);
             reportSensorFailure();
         }
@@ -934,7 +1065,7 @@ void loop()
     static unsigned long lastSample = 0;
     static unsigned long lastDraw   = 0;
 
-    pollButton();
+    pollButtons();
 
     const unsigned long now = millis();
 

@@ -12,8 +12,8 @@ namespace
     constexpr unsigned long MIN_SPEED_DT_MS = 8;
 
     // Speed (deg/s) thresholds that select the EMA alpha.
-    constexpr float SLOW_DPS   = 30.0f;
-    constexpr float MEDIUM_DPS = 70.0f;
+    constexpr float SLOW_DPS   = 90.0f;
+    constexpr float MEDIUM_DPS = 120.0f;
 
     // EMA factors: less smoothing for faster movements.
     constexpr float SMOOTH_ALPHA_SLOW   = 0.3f;
@@ -21,7 +21,7 @@ namespace
     constexpr float SMOOTH_ALPHA_FAST   = 0.6f;
 
     // Below this filtered speed the output is attenuated to suppress jitter.
-    constexpr float NOISE_GATE_DPS = 1.0f;
+    constexpr float NOISE_GATE_DPS = 8.0f;
 
     MagEncoder::Config configForSensor(MagEncoder::Sensor sensor)
     {
@@ -52,7 +52,9 @@ MagEncoder::MagEncoder(const Config &config)
       _rawAngle(0),
       _lastRawAngle(0),
       _cumulativePosition(0),
+      _pendingTicks(0),
       _lastPosition(0),
+      _lastSpeedAngle(0),
       _angularSpeed(0.0f),
       _lastReadTime(0),
       _lastSpeedTime(0),
@@ -104,13 +106,15 @@ bool MagEncoder::begin(TwoWire &wire)
 
     // Seed the baselines from the current reading so the first update() does
     // not report a jump from zero.
-    _rawAngle     = readAngle();
-    _lastRawAngle = _rawAngle;
-    _lastPosition = _rawAngle;
+    _rawAngle       = readAngle();
+    _lastRawAngle   = _rawAngle;
+    _lastPosition   = _rawAngle;
+    _lastSpeedAngle = _rawAngle;
 
     _lastReadTime  = millis();
     _lastSpeedTime = millis();
     _angularSpeed  = 0.0f;
+    _pendingTicks  = 0;
     return true;
 }
 
@@ -160,6 +164,7 @@ void MagEncoder::updateCumulativePosition()
 {
     const int16_t delta = unwrapAngleDelta(_rawAngle, _lastPosition);
     _cumulativePosition += delta;
+    _pendingTicks += delta;
     _lastPosition = _rawAngle;
 }
 
@@ -176,7 +181,16 @@ void MagEncoder::updateAngularSpeed(unsigned long currentTime)
     if (deltaTime < MIN_SPEED_DT_MS)
         return; // Too small a dt for a stable derivative.
 
-    const int16_t angleDelta = unwrapAngleDelta(_rawAngle, _lastRawAngle);
+    // Measure the angle travelled since the last *speed sample*, not since the
+    // last sensor read. Reads are throttled to readIntervalMs (5 ms by
+    // default) while this runs no more often than MIN_SPEED_DT_MS (8 ms), so
+    // pairing one read's worth of movement with the longer speed window used
+    // to under-report speed by roughly half: a true 90 deg/s turn measured 45.
+    // Everything downstream is calibrated in deg/s -- minVelDps, maxVelDps and
+    // the velocity zones -- so that halving pushed the whole curve out by 2x
+    // and left normal turning pinned at minScale.
+    const int16_t angleDelta = unwrapAngleDelta(_rawAngle, _lastSpeedAngle);
+    _lastSpeedAngle = _rawAngle;
 
     // Instantaneous speed in degrees/second.
     const float instantSpeed = (angleDelta * _countsToDegrees) / (deltaTime / 1000.0f);
@@ -272,6 +286,37 @@ float MagEncoder::getParameterIncrement(float minVal, float maxVal, uint8_t maxR
     return angleDelta * baseIncrement * velocityScale;
 }
 
+float MagEncoder::takeParameterIncrement(float minVal, float maxVal, uint8_t maxRotations)
+{
+    const int32_t ticks = _pendingTicks;
+    _pendingTicks = 0;
+
+    const float totalRange = maxVal - minVal;
+    if (ticks == 0 || totalRange <= 0.0f || maxRotations == 0)
+        return 0.0f;
+
+    const float baseIncrement =
+        totalRange / (static_cast<float>(_countsPerRev) * maxRotations);
+    const float velocityScale = calculateVelocityScale(fabsf(_angularSpeed));
+
+    return static_cast<float>(ticks) * baseIncrement * velocityScale;
+}
+
+int32_t MagEncoder::pendingTicks() const
+{
+    return _pendingTicks;
+}
+
+void MagEncoder::clearPendingTicks()
+{
+    _pendingTicks = 0;
+}
+
+float MagEncoder::getVelocityScale() const
+{
+    return calculateVelocityScale(fabsf(_angularSpeed));
+}
+
 float MagEncoder::mapPositionToRange(float minVal, float maxVal, uint8_t maxRotations) const
 {
     return minVal + getPositionPercentage(maxRotations) * (maxVal - minVal);
@@ -362,7 +407,9 @@ MagEncoder::VelocityZone MagEncoder::getVelocityZone() const
 void MagEncoder::resetCumulativePosition(int32_t position)
 {
     _cumulativePosition = position;
+    _pendingTicks = 0;
     _lastPosition = _rawAngle;
+    _lastSpeedAngle = _rawAngle;
 }
 
 uint16_t MagEncoder::readAS5600Register16(uint8_t reg) const

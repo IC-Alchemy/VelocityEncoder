@@ -188,7 +188,7 @@ public:
      */
     struct Config
     {
-        uint8_t       i2cAddress    = ADDRESS_A;
+        uint8_t       i2cAddress    = ADDRESS_B;
         MagChannels   channels      = MagChannels::XYZ;
         bool          enableTemp    = true;
         AnglePair     anglePair     = AnglePair::XY;
@@ -227,7 +227,7 @@ public:
     // Construction and setup
     // ------------------------------------------------------------------
 
-    /** Construct with default configuration (address 0x35, XYZ + temp + angle). */
+    /** Construct with default configuration (address 0x22, XYZ + temp + angle). */
     TMAG5273();
 
     /** Construct with custom configuration. */

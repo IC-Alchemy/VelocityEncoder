@@ -3,6 +3,12 @@
  This is the Arduino driver we ship with our magnetic encoder known as the
 Velocity Encoder.
 
+## Velocity Encoder
+
+<p>
+ <img src="Images/PXL_20260831_234347774.PORTRAIT.jpg" alt="Velocity Encoder hardware photograph, view 3" width="50%">
+</p>
+
 
 It does the basics you would expect from a magnetic encoder library, and one
 thing you probably would not: it knows how fast you are turning. Slow motion
@@ -16,7 +22,7 @@ with a single field:
 |---|---|---|
 | Type | 12-bit on-axis magnetic encoder | 3D Hall-effect sensor with CORDIC angle engine |
 | Resolution | 4096 counts/rev | 5760 counts/rev (1/16°) |
-| Default address | `0x36` | `0x35` (A parts; also `0x22`, `0x78`, `0x44`) |
+| Default address | `0x36` | `0x22` (B parts, as fitted; also `0x35`, `0x78`, `0x44`) |
 | Supply | 3.3V or 5V | **3.3V only** (1.7–3.6V part) |
 | Also gives you | — | X/Y/Z field in mT, die temperature, vector magnitude, diagnostics |
 
@@ -73,8 +79,11 @@ example that puts every last thing a TMAG5273 knows onto ten cycling screens.
 | TEST | GND |
 | INT | optional; leave unconnected unless you use interrupts |
 
-The A parts answer at `0x35`. For a B, C or D part pass
-`TMAG5273::ADDRESS_B` / `_C` / `_D` in the config. The magnetic range family
+The Velocity Encoder board fits a **TMAG5273B**, which answers at `0x22`, and
+that is what the library defaults to. For an A, C or D part pass
+`TMAG5273::ADDRESS_A` / `_C` / `_D` in the config — the address is set by the
+orderable part suffix, so read the marking on the die if you are unsure, or run
+the **I2CBusCheck** example and let it tell you. The magnetic range family
 (`x1` = ±40/±80 mT, `x2` = ±133/±266 mT) is read back from `DEVICE_ID` at
 `begin()`, so millitesla readings come out right for whichever part you fitted
 without you telling the library which one it is.
@@ -124,8 +133,8 @@ void loop()
 ```cpp
 MagEncoder::Config cfg;
 cfg.sensor = MagEncoder::Sensor::TMAG5273;
-// Leave i2cAddress at 0 and the sensor's own default (0x35) is used.
-// cfg.i2cAddress = TMAG5273::ADDRESS_B;   // for a B part
+// Leave i2cAddress at 0 and the sensor's own default (0x22) is used.
+// cfg.i2cAddress = TMAG5273::ADDRESS_A;   // for an A part
 
 MagEncoder encoder(cfg);
 ```
@@ -257,7 +266,7 @@ void draw(float value)
 | Field | Default | Description |
 |---|---|---|
 | `sensor` | `Sensor::AS5600` | Which part is fitted. |
-| `i2cAddress` | `0` | `0` means "use the selected sensor's default" (`0x36` / `0x35`). |
+| `i2cAddress` | `0` | `0` means "use the selected sensor's default" (`0x36` / `0x22`). |
 | `readIntervalMs` | `5` | Minimum ms between sensor reads. |
 | `minVelDps` / `maxVelDps` | `90` / `2400` | Speed range the curve is defined over. |
 | `minScale` / `maxScale` | `0.008` / `3.2` | Slow- and fast-turn multipliers. |
@@ -294,6 +303,9 @@ void draw(float value)
 | Method | Description |
 |---|---|
 | `float getParameterIncrement(min, max, maxRotations)` | Velocity-scaled per-call increment for adjusting a parameter. |
+| `float takeParameterIncrement(min, max, maxRotations)` | Same, but drains an internal count accumulator so each count is applied exactly once. Use this in any loop faster than `readIntervalMs`. |
+| `int32_t pendingTicks()` / `void clearPendingTicks()` | Inspect or drop undrained counts (e.g. after a mode switch). |
+| `float getVelocityScale()` | The multiplier the increment math is currently using, for display. |
 | `float mapPositionToRange(min, max, maxRotations)` | Absolute mapping of cumulative position into a range (no velocity scaling). |
 
 ### State management

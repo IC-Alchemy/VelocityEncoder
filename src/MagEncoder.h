@@ -17,8 +17,9 @@
  *                        (4096 counts per revolution, I2C address 0x36).
  *   - Sensor::TMAG5273 — TI TMAG5273, 3D Hall-effect sensor whose CORDIC
  *                        engine reports angle at 1/16 degree
- *                        (5760 counts per revolution, I2C address 0x35 for
- *                        the A parts; see TMAG5273::ADDRESS_A..ADDRESS_D).
+ *                        (5760 counts per revolution, I2C address 0x22 for
+ *                        the B parts fitted on the Velocity Encoder board;
+ *                        see TMAG5273::ADDRESS_A..ADDRESS_D for the others).
  *
  * Everything above the raw angle read is shared, so the knob feel is identical
  * on both parts and a sketch can switch sensors by changing one field:
@@ -84,7 +85,11 @@ public:
 
     /** Default I2C address of each supported sensor. */
     static constexpr uint8_t AS5600_ADDRESS   = 0x36;
-    static constexpr uint8_t TMAG5273_ADDRESS = TMAG5273::ADDRESS_A;
+    // The Velocity Encoder board fits a TMAG5273B, which answers at 0x22, so
+    // that is what the "0 = use the default" sentinel resolves to. Pass
+    // ADDRESS_A / _C / _D in Config::i2cAddress for the other factory-
+    // programmed variants.
+    static constexpr uint8_t TMAG5273_ADDRESS = TMAG5273::ADDRESS_B;
 
     /**
      * Construct an encoder with default tuning, reading an AS5600.
@@ -205,6 +210,37 @@ public:
     float getParameterIncrement(float minVal, float maxVal, uint8_t maxRotations = 4) const;
 
     /**
+     * Consuming counterpart to getParameterIncrement().
+     *
+     * getParameterIncrement() derives its delta from the last two *sensor
+     * reads*, which are throttled to readIntervalMs. A control loop that spins
+     * faster than that therefore sees the same delta on every iteration and
+     * applies it several times — the parameter runs away.
+     * takeParameterIncrement() instead drains an internal tick accumulator that
+     * update() fills, so every encoder count is applied exactly once no matter
+     * how often the caller polls.
+     *
+     * Prefer this in any loop that is not hand-paced to readIntervalMs.
+     *
+     * Example:
+     *   encoder.update();
+     *   param = constrain(param + encoder.takeParameterIncrement(0, 1, 4), 0, 1);
+     */
+    float takeParameterIncrement(float minVal, float maxVal, uint8_t maxRotations = 4);
+
+    /** Unconsumed encoder counts since the last drain (sign = direction). */
+    int32_t pendingTicks() const;
+
+    /** Drop any unconsumed counts (e.g. after a mode switch). */
+    void clearPendingTicks();
+
+    /**
+     * Current velocity multiplier, in [Config::minScale, Config::maxScale].
+     * Exposed so a UI can display the same number the increment math uses.
+     */
+    float getVelocityScale() const;
+
+    /**
      * Convenience: map the current cumulative position directly into
      * [minVal, maxVal] (no velocity scaling). Useful for absolute-position
      * knobs rather than incremental ones.
@@ -246,7 +282,9 @@ private:
     uint16_t      _rawAngle;
     uint16_t      _lastRawAngle;
     int32_t       _cumulativePosition;
+    int32_t       _pendingTicks;   // drained by takeParameterIncrement()
     uint16_t      _lastPosition;
+    uint16_t      _lastSpeedAngle;  // angle at the last speed sample
     float         _angularSpeed;
     unsigned long _lastReadTime;
     unsigned long _lastSpeedTime;
