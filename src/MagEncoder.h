@@ -17,7 +17,7 @@
  *                        (4096 counts per revolution, I2C address 0x36).
  *   - Sensor::TMAG5273 — TI TMAG5273, 3D Hall-effect sensor whose CORDIC
  *                        engine reports angle at 1/16 degree
- *                        (5760 counts per revolution, I2C address 0x22 for
+ *                        (5760 counts per revolution, I2C address 0x35 for
  *                        the B parts fitted on the Velocity Encoder board;
  *                        see TMAG5273::ADDRESS_A..ADDRESS_D for the others).
  *
@@ -85,11 +85,11 @@ public:
 
     /** Default I2C address of each supported sensor. */
     static constexpr uint8_t AS5600_ADDRESS   = 0x36;
-    // The Velocity Encoder board fits a TMAG5273B, which answers at 0x22, so
+    // The Velocity Encoder board fits a TMAG5273B, which answers at 0x35, so
     // that is what the "0 = use the default" sentinel resolves to. Pass
     // ADDRESS_A / _C / _D in Config::i2cAddress for the other factory-
     // programmed variants.
-    static constexpr uint8_t TMAG5273_ADDRESS = TMAG5273::ADDRESS_B;
+    static constexpr uint8_t TMAG5273_ADDRESS = TMAG5273::ADDRESS_A;
 
     /**
      * Construct an encoder with default tuning, reading an AS5600.

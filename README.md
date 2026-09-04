@@ -1,228 +1,209 @@
 # EncoderAlchemy
 
- This is the Arduino driver we ship with our magnetic encoder known as the
-Velocity Encoder.
+Turn slowly. Land exactly where you mean to.
 
-## Velocity Encoder
+EncoderAlchemy is an Arduino library for magnetic rotary controls that need two kinds of movement: fine adjustment under the fingertips and quick travel across a large range. It reads an AMS AS5600 or TI TMAG5273 over I2C, tracks position across multiple turns, and turns angular speed into a controllable parameter increment.
+
+We wrote it for instruments and hardware controls, then kept the API useful for ordinary Arduino projects. The source is here to inspect, adapt, and use with your own sensor board.
 
 <p>
- <img src="Images/PXL_20260831_234347774.PORTRAIT.jpg" alt="Velocity Encoder hardware photograph, view 3" width="33%">
+  <img src="Images/PXL_20260831_234347774.PORTRAIT.jpg" alt="Velocity Encoder hardware photograph" width="33%">
 </p>
 
+## The Velocity Encoder
 
-It does the basics you would expect from a magnetic encoder library, and one
-thing you probably would not: it knows how fast you are turning. Slow motion
-gives fine control; fast motion covers range. That is the whole reason this
-driver exists.
+We also make the Velocity Encoder, a magnetic encoder board that uses this library. It is populated with a TMAG5273B, which uses I2C address `0x35`. The same library works with compatible AS5600 and TMAG5273 breakout boards, so the code you start with can stay with your project.
 
-Two sensors are supported behind one API, and you pick which one you are using
-with a single field:
+Slow movement gives a small change. A faster turn moves through the same parameter range quickly. You can set the response curve, read the raw sensor data, or ignore the velocity layer and use it as a conventional encoder library.
 
-| | **AS5600** | **TMAG5273** |
+<p>
+  <img src="Images/PXL_20260831_234050656.jpg" alt="Velocity Encoder held in a hand" width="33%">
+</p>
+
+## Supported sensors
+
+| | AS5600 | TMAG5273 |
 |---|---|---|
-| Type | 12-bit on-axis magnetic encoder | 3D Hall-effect sensor with CORDIC angle engine |
-| Resolution | 4096 counts/rev | 5760 counts/rev (1/16°) |
-| Default address | `0x36` | `0x22` (B parts, as fitted; also `0x35`, `0x78`, `0x44`) |
-| Supply | 3.3V or 5V | **3.3V only** (1.7–3.6V part) |
-| Also gives you | — | X/Y/Z field in mT, die temperature, vector magnitude, diagnostics |
+| Type | 12-bit on-axis magnetic encoder | 3D Hall-effect sensor with a CORDIC angle engine |
+| Resolution | 4096 counts per revolution | 5760 counts per revolution, 1/16 degree |
+| Default I2C address | `0x36` | `0x35` for A parts, with B, C, and D variants available |
+| Supply | 3.3 V or 5 V, depending on the breakout board | 3.3 V only, 1.7 to 3.6 V |
+| Extra data | Angle | X, Y, Z field in mT, die temperature, magnitude, diagnostics, and registers |
 
-There is also an optional **SH1106G OLED helper** for building readouts, and an
-example that puts every last thing a TMAG5273 knows onto ten cycling screens.
+The encoder-facing API stays the same for both parts. Select the sensor in `MagEncoder::Config`, then use the same position, speed, and parameter methods.
 
-<p>
- <img src="Images/PXL_20260831_234050656.jpg" alt="Velocity Encoder  in hand " width="33%">
-</p>
+## What the library does
 
-## Features
+- Reads raw angle, normalized angle, and degrees.
+- Unwraps the sensor's zero crossing into a signed multi-turn position.
+- Filters angular speed in degrees per second.
+- Converts movement into a velocity-scaled parameter increment.
+- Gives TMAG5273 projects access to three magnetic axes, temperature, diagnostics, configuration, and register access.
+- Includes an optional `AlchemyOled` helper for 128×64 SH1106G readouts.
 
-- **One API, two sensors.** Set `Config::sensor` and the rest of your sketch
-  does not change. Counts-per-revolution, the default I2C address and the wrap
-  handling all follow automatically.
-- **Raw and normalized angle** — the sensor's native counts and a 0.0–1.0
-  reading, plus degrees.
-- **Multi-turn cumulative position** with wrap-around correction. Several
-  revolutions in the same direction add up instead of jumping back at the top of
-  the count range. Use it for endless-encoder UIs.
-- **Filtered angular speed** in degrees/second. An adaptive low-pass filter
-  smooths less when you move fast and more when you move slow, with a noise gate
-  that keeps the reading still when the knob is still.
-- **Velocity-scaled parameter increment** (`getParameterIncrement()`): turn slow
-  for fine adjustment, fast for a wide sweep. The response curve is fully tunable
-  via `MagEncoder::Config`.
-- **Full TMAG5273 driver** (`TMAG5273`): three magnetic axes in millitesla, die
-  temperature in °C, the CORDIC angle engine, resultant vector magnitude,
-  conversion and device status flags, configurable ranges, averaging, power
-  modes, thresholds and interrupts, and raw access to the whole register map.
-- **Optional OLED helper** (`AlchemyOled`): title bars, bar meters, centre-zero
-  meters, segment meters, dials, needles, arcs, ring gauges, vectorscopes,
-  sparklines and cell-addressed text on a 128×64 SH1106G.
-- **Connection detection**, so a sketch can degrade gracefully when no magnet is
-  fitted.
-- **No mandatory dependencies** — the core needs only `Wire` and the Arduino
-  core. The OLED helper compiles to nothing unless you ask for it.
+The core encoder code needs only `Wire` and an Arduino core with a working `TwoWire` implementation. The OLED helper uses Adafruit SH110X and Adafruit GFX.
 
-## Hardware
+## Wiring
 
 ### AS5600
 
 | AS5600 pin | Connect to |
 |---|---|
-| VCC | 3.3V or 5V (check your breakout's regulator) |
+| VCC | 3.3 V or 5 V. Check the regulator on your breakout board. |
 | GND | GND |
-| SDA | board SDA |
-| SCL | board SCL |
+| SDA | Your board's SDA pin |
+| SCL | Your board's SCL pin |
 
 ### TMAG5273
 
 | TMAG5273 pin | Connect to |
 |---|---|
-| VCC | **3.3V** — this is a 1.7–3.6V part, do not feed it 5V |
+| VCC | 3.3 V. The part accepts 1.7 to 3.6 V. |
 | GND | GND |
-| SDA | board SDA |
-| SCL | board SCL |
+| SDA | Your board's SDA pin |
+| SCL | Your board's SCL pin |
 | TEST | GND |
-| INT | optional; leave unconnected unless you use interrupts |
+| INT | Optional. Connect it when your project uses interrupts. |
 
-The Velocity Encoder board fits a **TMAG5273B**, which answers at `0x22`, and
-that is what the library defaults to. For an A, C or D part pass
-`TMAG5273::ADDRESS_A` / `_C` / `_D` in the config — the address is set by the
-orderable part suffix, so read the marking on the die if you are unsure, or run
-the **I2CBusCheck** example and let it tell you. The magnetic range family
-(`x1` = ±40/±80 mT, `x2` = ±133/±266 mT) is read back from `DEVICE_ID` at
-`begin()`, so millitesla readings come out right for whichever part you fitted
-without you telling the library which one it is.
+The Velocity Encoder board uses the A-addressed part at `0x35`. B, C, and D parts use factory-set addresses. Set the address explicitly when you know the fitted variant:
 
-### OLED (optional)
+```cpp
+cfg.i2cAddress = TMAG5273::ADDRESS_A;  // 0x35
+cfg.i2cAddress = TMAG5273::ADDRESS_B;  // 0x22
+cfg.i2cAddress = TMAG5273::ADDRESS_C;  // 0x78
+cfg.i2cAddress = TMAG5273::ADDRESS_D;  // 0x44
+```
 
-Any 128×64 SH1106G module on the same I2C bus, default address `0x3C`.
+Leave `i2cAddress` at `0` to use the selected sensor's library default: `0x36` for AS5600 and `0x35` for TMAG5273. The `I2CBusCheck` example helps inspect a shared bus before you debug a sensor sketch.
 
-## Installation
+### Optional OLED
 
-In the Arduino IDE, use **Sketch → Include Library → Add .ZIP Library…** on a
-zip of this folder, or drop the `EncoderAlchemy/` folder into your `libraries/`
-directory. The library is architecture-independent (`architectures=*`) and builds
-on any core that provides a working `TwoWire`.
+Any 128×64 SH1106G display can share the I2C bus. `AlchemyOled` uses address `0x3C` by default.
 
-For the OLED examples you also need **Adafruit SH110X** and **Adafruit GFX
-Library** from the Library Manager. Sketches that do not use the display need
-neither.
+## Install
+
+In the Arduino IDE, choose **Sketch → Include Library → Add .ZIP Library…** and select a ZIP of this repository. You can also place the library folder inside your Arduino sketchbook's `libraries` directory.
+
+EncoderAlchemy builds on Arduino cores that provide `TwoWire`. Install **Adafruit SH110X** and **Adafruit GFX Library** from Library Manager when you want to use the OLED helper or its examples.
 
 ## Quick start
+
+This sketch uses an AS5600, which is the default sensor. It calls `update()` every pass through `loop()`, then uses the consuming parameter method so each physical encoder count is applied once.
 
 ```cpp
 #include <MagEncoder.h>
 
-MagEncoder encoder;   // AS5600 by default
+MagEncoder encoder;
+float cutoff = 0.0f;
 
 void setup()
 {
     Serial.begin(115200);
+
     if (!encoder.begin())
-    {
-        Serial.println("Sensor not found.");
-        while (true) { delay(1000); }
-    }
+        Serial.println("AS5600 not found. Check power, SDA, and SCL.");
 }
 
 void loop()
 {
+    if (!encoder.isConnected())
+        return;
+
     encoder.update();
-    Serial.println(encoder.getNormalizedAngle(), 3);
-    delay(50);
+
+    const float change =
+        encoder.takeParameterIncrement(0.0f, 1.0f, 4);
+    cutoff = constrain(cutoff + change, 0.0f, 1.0f);
 }
 ```
 
-### Choosing the TMAG5273 instead
+The final argument sets how many full rotations span the parameter range. In this example, four rotations cover `0.0` to `1.0`.
+
+## Use a TMAG5273
+
+Set the sensor type before constructing `MagEncoder`. The Velocity Encoder uses the A part at `0x35`.
 
 ```cpp
 MagEncoder::Config cfg;
 cfg.sensor = MagEncoder::Sensor::TMAG5273;
-// Leave i2cAddress at 0 and the sensor's own default (0x22) is used.
-// cfg.i2cAddress = TMAG5273::ADDRESS_A;   // for an A part
+cfg.i2cAddress = TMAG5273::ADDRESS_A;
 
 MagEncoder encoder(cfg);
 ```
 
-Or, when the defaults are fine, just:
+When the address is already the selected sensor's default, this shorter form is enough:
 
 ```cpp
 MagEncoder encoder(MagEncoder::Sensor::TMAG5273);
 ```
 
-Everything downstream — `getParameterIncrement()`, `getCumulativePosition()`,
-`getVelocityZone()` — behaves identically. The only visible difference is that
-`getRawAngle()` now counts to 5759 instead of 4095, which
-`getCountsPerRevolution()` will tell you.
+TMAG5273 readings run through the same `getCumulativePosition()`, `getAngularSpeed()`, and parameter-control methods as AS5600 readings. Its native raw-angle range is `0` through `5759`; use `getCountsPerRevolution()` when a sketch needs the exact value.
 
-## Velocity-sensitive parameter control
+## Build a good control loop
 
-The headline feature: turn slowly, get fine control; turn fast, cover range.
-Pass a `[min, max]` range and how many full turns should span it:
+`getParameterIncrement()` reports a velocity-scaled change derived from the most recent sensor movement. `update()` is rate-limited by `readIntervalMs`, so a fast loop can see that same movement more than once.
+
+For most interactive controls, use `takeParameterIncrement()`. It drains the pending encoder ticks and applies every count once:
 
 ```cpp
-float parameter = 0.0f;
-
-void loop()
-{
-    encoder.update();
-
-    float increment = encoder.getParameterIncrement(0.0f, 1.0f, 4);
-    parameter = constrain(parameter + increment, 0.0f, 1.0f);
-
-    Serial.println(parameter, 3);
-    delay(5);
-}
+encoder.update();
+parameter = constrain(
+    parameter + encoder.takeParameterIncrement(minValue, maxValue, turns),
+    minValue,
+    maxValue);
 ```
 
-The curve that maps angular speed to a per-count multiplier is tunable via
-`MagEncoder::Config`:
+If your code uses `getParameterIncrement()`, apply it only after `getCumulativePosition()` changes. Call `clearPendingTicks()` when a mode or parameter selection changes, so movement made on one page does not alter the next page.
+
+## Tune the feel
+
+The defaults are the curve we use in our own instruments. They are a useful starting point. Every control has a different travel, range, and player behind it, so the curve belongs in the sketch:
 
 ```cpp
 MagEncoder::Config cfg;
-cfg.minVelDps         = 90.0f;   // below this, multiplier = minScale
-cfg.maxVelDps         = 2400.0f; // above this, multiplier = maxScale
-cfg.minScale          = 0.008f;  // slow-turn multiplier
-cfg.maxScale          = 3.2f;    // fast-turn multiplier
-cfg.curveExponent     = 1.8f;    // mid-range curve shape
-cfg.velocitySmoothing = 0.08f;   // EMA factor (smaller = smoother, laggier)
+cfg.minVelDps         = 90.0f;    // Speed where the slow scale ends
+cfg.maxVelDps         = 2400.0f;  // Speed where the fast scale tops out
+cfg.minScale          = 0.008f;   // Fine movement multiplier
+cfg.maxScale          = 3.2f;     // Fast movement multiplier
+cfg.curveExponent     = 1.8f;     // Middle of the response curve
+cfg.velocitySmoothing = 0.08f;    // Smaller values smooth more
 
 MagEncoder encoder(cfg);
 ```
 
-These defaults are the curve we use in our own instruments. They are a starting
-point, not a verdict — every knob feels different, and every player has a
-preference.
+`readIntervalMs` sets the minimum time between sensor reads. It defaults to 5 ms, so calling `update()` every loop is safe.
 
-## Reading the rest of the TMAG5273
+## Read the TMAG5273 data
 
-When the encoder is configured for a TMAG5273, `encoder.tmag()` hands you the
-underlying driver. `encoder.update()` already refreshed it, so there is no
-second I2C transaction to pay for:
+With a TMAG5273 selected, `encoder.tmag()` gives you the underlying driver. `encoder.update()` already refreshed it, so these reads do not start another sensor transaction.
 
 ```cpp
 TMAG5273 &mag = encoder.tmag();
 
 encoder.update();
 
-float bx = mag.getX();                // millitesla
-float by = mag.getY();
-float bz = mag.getZ();
-float t  = mag.getTemperature();      // degrees C
-float a  = mag.getAngle();            // 0.0 .. 359.9375
-float b  = mag.getFieldMagnitude();   // sqrt(x^2 + y^2 + z^2)
+const float bx = mag.getX();               // mT
+const float by = mag.getY();               // mT
+const float bz = mag.getZ();               // mT
+const float temperature = mag.getTemperature();
+const float angle = mag.getAngle();        // degrees
+const float field = mag.getFieldMagnitude();
 
-if (mag.getDeviceStatus().vccUnderVolt) { /* brownout */ }
+if (mag.getDeviceStatus().vccUnderVolt)
+{
+    // Handle a supply-voltage fault.
+}
 ```
 
-The driver can also be used entirely on its own, without `MagEncoder`:
+You can also use the TMAG5273 driver without `MagEncoder`:
 
 ```cpp
 #include <TMAG5273.h>
 
 TMAG5273::Config cfg;
-cfg.channels   = TMAG5273::MagChannels::XYZ;
-cfg.anglePair  = TMAG5273::AnglePair::XY;
-cfg.averaging  = TMAG5273::ConvAvg::X16;
+cfg.channels = TMAG5273::MagChannels::XYZ;
+cfg.anglePair = TMAG5273::AnglePair::XY;
+cfg.averaging = TMAG5273::ConvAvg::X16;
 
 TMAG5273 sensor(cfg);
 sensor.begin();
@@ -231,11 +212,7 @@ sensor.update();
 
 ## OLED readouts
 
-`AlchemyOled` wraps `Adafruit_SH1106G` and adds the drawing vocabulary a sensor
-readout is actually written in. Name the Adafruit headers in your sketch before
-including it — the Arduino builder works out the include path by reading the
-`#include` lines it can see, and `AlchemyOled.h`'s own include is behind
-`__has_include`:
+`AlchemyOled` adds compact drawing helpers on top of `Adafruit_SH1106G`: title bars, bar meters, dials, arcs, ring gauges, vectors, and sparklines. Include the Adafruit headers in the sketch before `AlchemyOled.h` so the Arduino builder finds the display libraries.
 
 ```cpp
 #include <Adafruit_GFX.h>
@@ -246,13 +223,13 @@ AlchemyOled oled;
 
 void setup()
 {
-    oled.begin();               // returns false if the panel is absent
+    oled.begin();  // false when the panel does not respond
 }
 
 void draw(float value)
 {
     oled.clear();
-    oled.title("FIELD", "1/10");
+    oled.title("FIELD", "1/8");
     oled.bipolarBar(2, 16, 100, 9, value, 40.0f);
     oled.ringGauge(96, 40, 18, 4, value / 40.0f);
     oled.at(0, 5).print("Bx ");
@@ -261,127 +238,103 @@ void draw(float value)
 }
 ```
 
-`gfx()` is always there for anything the helper does not cover.
+`gfx()` exposes the Adafruit display object for drawing that sits outside the helper's vocabulary.
 
 ## API reference
 
 ### `MagEncoder::Config`
 
-| Field | Default | Description |
+| Field | Default | Meaning |
 |---|---|---|
-| `sensor` | `Sensor::AS5600` | Which part is fitted. |
-| `i2cAddress` | `0` | `0` means "use the selected sensor's default" (`0x36` / `0x22`). |
-| `readIntervalMs` | `5` | Minimum ms between sensor reads. |
-| `minVelDps` / `maxVelDps` | `90` / `2400` | Speed range the curve is defined over. |
-| `minScale` / `maxScale` | `0.008` / `3.2` | Slow- and fast-turn multipliers. |
-| `curveExponent` | `1.8` | Mid-range curve shape. |
-| `velocitySmoothing` | `0.08` | EMA factor for the velocity scale. |
-| `tmag` | — | A `TMAG5273::Config`, ignored when `sensor` is `AS5600`. |
+| `sensor` | `Sensor::AS5600` | The fitted sensor. |
+| `i2cAddress` | `0` | Uses the selected sensor default, `0x36` or `0x22`. |
+| `readIntervalMs` | `5` | Minimum time between sensor reads. |
+| `minVelDps` / `maxVelDps` | `90` / `2400` | Speed range used by the response curve. |
+| `minScale` / `maxScale` | `0.008` / `3.2` | Fine and fast movement multipliers. |
+| `curveExponent` | `1.8` | Shape of the curve's middle range. |
+| `velocitySmoothing` | `0.08` | Velocity-scale EMA factor. Smaller values add smoothing. |
+| `tmag` | TMAG5273 defaults | TMAG5273 configuration, ignored for AS5600. |
 
-### Setup / polling
+### Setup and polling
 
-| Method | Description |
+| Method | Meaning |
 |---|---|
-| `bool begin(TwoWire& = Wire)` | Initialize I2C and detect the sensor. Returns false if not present. Pass `Wire1` to use a second bus. |
-| `void update()` | Read the sensor and refresh derived state. Throttled to `readIntervalMs`. Call every loop. |
-| `bool isConnected()` | Returns whether `begin()` detected the sensor. |
+| `bool begin(TwoWire& = Wire)` | Starts I2C and detects the configured sensor. Pass `Wire1` to use a second bus. |
+| `void update()` | Refreshes the sensor and derived state. The method follows `readIntervalMs`. |
+| `bool isConnected()` | Reports whether `begin()` found the sensor. |
 
-### Read-only state
+### Position and velocity
 
-| Method | Description |
+| Method | Meaning |
 |---|---|
-| `uint16_t getRawAngle()` | Native counts: 0–4095 (AS5600) or 0–5759 (TMAG5273). |
-| `float getNormalizedAngle()` | Raw angle normalized to 0.0–1.0. |
-| `float getAngleDegrees()` | Shaft angle in degrees, 0.0–360.0. |
-| `int32_t getCumulativePosition()` | Multi-turn position with wrap-around unwrapped. |
-| `float getAngularSpeed()` | Filtered angular speed in °/s. |
-| `float getPositionPercentage(maxRotations)` | Cumulative position as 0.0–1.0 across N turns. |
-| `VelocityZone getVelocityZone()` | Coarse `Idle`/`Low`/`Mid`/`High` qualitative reading. |
-| `Sensor getSensor()` / `const char* getSensorName()` | Which part this instance drives. |
-| `uint8_t getI2CAddress()` | The address in use, sentinel resolved. |
-| `uint16_t getCountsPerRevolution()` | 4096 or 5760. |
-| `TMAG5273& tmag()` | The underlying TMAG5273 driver. |
+| `uint16_t getRawAngle()` | Native angle counts: 0 to 4095 for AS5600, or 0 to 5759 for TMAG5273. |
+| `float getNormalizedAngle()` | Angle mapped to 0.0 through 1.0. |
+| `float getAngleDegrees()` | Shaft angle in degrees. |
+| `int32_t getCumulativePosition()` | Signed, multi-turn position with wrap-around removed. |
+| `float getAngularSpeed()` | Filtered angular speed in degrees per second. |
+| `float getPositionPercentage(maxRotations)` | Cumulative position mapped across a chosen number of turns. |
+| `VelocityZone getVelocityZone()` | One of `Idle`, `Low`, `Mid`, or `High`. |
+| `Sensor getSensor()` / `const char* getSensorName()` | The configured sensor. |
+| `uint8_t getI2CAddress()` | Active 7-bit I2C address. |
+| `uint16_t getCountsPerRevolution()` | 4096 for AS5600 or 5760 for TMAG5273. |
 
 ### Parameter control
 
-| Method | Description |
+| Method | Meaning |
 |---|---|
-| `float getParameterIncrement(min, max, maxRotations)` | Velocity-scaled per-call increment for adjusting a parameter. |
-| `float takeParameterIncrement(min, max, maxRotations)` | Same, but drains an internal count accumulator so each count is applied exactly once. Use this in any loop faster than `readIntervalMs`. |
-| `int32_t pendingTicks()` / `void clearPendingTicks()` | Inspect or drop undrained counts (e.g. after a mode switch). |
-| `float getVelocityScale()` | The multiplier the increment math is currently using, for display. |
-| `float mapPositionToRange(min, max, maxRotations)` | Absolute mapping of cumulative position into a range (no velocity scaling). |
+| `float getParameterIncrement(min, max, maxRotations)` | Velocity-scaled change based on the most recent sensor movement. Gate it on a new position. |
+| `float takeParameterIncrement(min, max, maxRotations)` | Consuming version for normal fast loops. Each pending count is used once. |
+| `int32_t pendingTicks()` / `void clearPendingTicks()` | Inspect or discard undrained movement. Clear it after a page or mode change. |
+| `float getVelocityScale()` | Current multiplier for display or diagnostics. |
+| `float mapPositionToRange(min, max, maxRotations)` | Maps the absolute multi-turn position with no velocity scaling. |
 
-### State management
+### State and TMAG5273 access
 
-| Method | Description |
+| Method | Meaning |
 |---|---|
-| `void resetCumulativePosition(position = 0)` | Reset the counter and reseed the internal baseline. |
+| `void resetCumulativePosition(position = 0)` | Resets the multi-turn count and its baseline. |
+| `TMAG5273& tmag()` | Gives access to the underlying TMAG5273 driver. Use it when the selected sensor is TMAG5273. |
 
 ### `TMAG5273`
 
-| Method | Description |
+| Method group | Meaning |
 |---|---|
-| `bool begin(TwoWire& = Wire)` | Verify the manufacturer ID, learn the range family, write the config. |
-| `bool update()` | Burst-read temperature, X, Y, Z, status, angle and magnitude. |
-| `float getX() / getY() / getZ()` | Magnetic flux density in millitesla. |
-| `int16_t getRawX() / getRawY() / getRawZ()` | The signed 16-bit ADC codes. |
-| `float getFieldMagnitude()` | √(x²+y²+z²) in millitesla. |
-| `float getAzimuth() / getElevation()` | Field direction in and out of the XY plane. |
-| `float getTemperature()` | Die temperature in °C. |
-| `float getAngle()` / `uint16_t getRawAngle()` | CORDIC angle in degrees / in 1/16° counts. |
-| `uint8_t getMagnitude()` | The device's own 8-bit resultant magnitude. |
-| `getConversionStatus() / getDeviceStatus()` | Decoded `CONV_STATUS` and `DEVICE_STATUS`. |
-| `getVersion() / getVersionName() / getManufacturerId()` | Part identification. |
-| `getRangeXY() / getRangeZ()` | Full-scale range in mT for the fitted part. |
-| `setMagChannels / setTemperatureChannel / setAnglePair` | Which channels convert. |
-| `setAveraging / setTempCo / setOperatingMode / setSleepTime` | Conversion and power behaviour. |
-| `setRanges / setLowNoiseMode` | Sensitivity and noise/current trade-off. |
-| `setMagneticGain / setMagneticOffsets / setMagneticThresholds` | Trim and comparator setup. |
-| `setInterrupt / triggerConversion / clearStatusFlags` | INT pin and latched flags. |
-| `readRegister / writeRegister / readRegisters / readRegisterMap` | Raw register access. |
+| `begin()`, `update()`, `isConnected()` | Start, refresh, and inspect the driver connection. |
+| `getX()`, `getY()`, `getZ()`, `getFieldMagnitude()` | Magnetic field readings in mT. |
+| `getRawX()`, `getRawY()`, `getRawZ()`, `getMagnitude()` | Native sensor readings. |
+| `getAzimuth()`, `getElevation()`, `getAngle()`, `getRawAngle()` | Field direction and CORDIC angle. |
+| `getTemperature()`, `getConversionStatus()`, `getDeviceStatus()` | Thermal and diagnostic data. |
+| `getVersion()`, `getVersionName()`, `getManufacturerId()` | Device identification. |
+| `getRangeXY()`, `getRangeZ()` | The fitted part's full-scale field ranges. |
+| `setMagChannels()`, `setTemperatureChannel()`, `setAnglePair()` | Select conversion channels and angle axes. |
+| `setAveraging()`, `setTempCo()`, `setOperatingMode()`, `setSleepTime()` | Set conversion and power behavior. |
+| `setRanges()`, `setLowNoiseMode()` | Choose sensitivity and noise/current trade-offs. |
+| `setMagneticGain()`, `setMagneticOffsets()`, `setMagneticThresholds()` | Configure magnetic trim and thresholds. |
+| `setInterrupt()`, `triggerConversion()`, `clearStatusFlags()` | Work with the INT pin and conversion flags. |
+| `readRegister()`, `writeRegister()`, `readRegisters()`, `readRegisterMap()` | Direct register access. |
 
 ### `AlchemyOled`
 
 Text: `at`, `atPixel`, `text`, `textCentered`, `textRight`, `textWidth`, `title`.
+
 Meters: `bar`, `barVertical`, `bipolarBar`, `segmentBar`.
-Round things: `dial`, `needle`, `arc`, `ringGauge`, `polar`, `arrowHead`,
-`vector`. Plots: `sparkline`, `dottedHLine`, `dottedVLine`, `plotFrame`.
+
+Round drawing: `dial`, `needle`, `arc`, `ringGauge`, `polar`, `arrowHead`, `vector`.
+
+Plots: `sparkline`, `dottedHLine`, `dottedVLine`, `plotFrame`.
+
 Frame control: `clear`, `show`, `gfx`.
 
 ## Examples
 
-- **BasicReading** — print raw/normalized/cumulative/speed every 50 ms.
-- **VelocitySensitiveKnob** — adjust a float parameter with velocity scaling,
-  plus a button to reset the cumulative position. Set `SENSOR_CHOICE` at the top
-  to pick AS5600 or TMAG5273, and `ENABLE_OLED` to add a ring-gauge readout.
-- **TMAG5273Explorer** — everything a TMAG5273 knows, across ten OLED screens
-  cycled by a button on GP0. Short press changes screen, long press resets peak
-  hold and history.
+- **VelocitySensitiveKnob** adjusts a floating-point parameter with velocity scaling. It can show the value, speed, and velocity zone on an OLED.
+- **TMAG5273Explorer** presents the TMAG5273's angle, magnetic field, temperature, and diagnostics on cycling OLED views.
+- **I2CBusCheck** checks SDA and SCL idle levels, then scans the I2C bus at 100 kHz and 400 kHz.
 
-  ![The ten screens](examples/TMAG5273Explorer/screens.png)
+![TMAG5273Explorer display views](examples/TMAG5273Explorer/screens.png)
 
-  *The example's own frame buffers, rendered off a simulated sensor turning a
-  magnet in the XY plane — not a photograph of a panel.*
-
-
-  | | Screen | What it shows |
-  |---|---|---|
-  | 1 | OVERVIEW | Angle set large, field strength, temperature, all three axes as centre-zero meters |
-  | 2 | COMPASS | Ticked dial with needle and sweep arc, turn counter, speed, direction |
-  | 3 | AXES | Full-width centre-zero bar meters for X, Y and Z |
-  | 4 | VECTOR | XY-plane vectorscope with a persistence trail |
-  | 5 | SCOPE | Three scrolling waveform lanes, one per axis |
-  | 6 | 3D FIELD | Isometric axes with the field vector and its shadow on the XY plane |
-  | 7 | THERMAL | Big temperature read, thermometer graphic, history sparkline, min/max |
-  | 8 | RADAR | Field magnitude as a proximity radar with a peak-hold ring |
-  | 9 | DIAG | Conversion and device status flags, IDs, addresses |
-  | 10 | REGISTERS | Hex dump of the register map plus a live bit texture |
-
-- **MIDI2HiResKnob** — USB MIDI knob example. Open it in the Arduino IDE to
-  send a 14-bit MIDI 1.0 CC pair via MIDIUSB, or build it with PlatformIO on
-  Pico 2 to send true MIDI 2.0 UMP with 32-bit CC values.
+The image is rendered from the example's frame buffers with simulated sensor motion. It shows the display layout, rather than a photograph of a finished panel.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

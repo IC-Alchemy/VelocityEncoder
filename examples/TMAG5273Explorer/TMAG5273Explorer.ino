@@ -34,7 +34,7 @@
  *   Pushbutton     -> between GP7 and GND (the pin is driven INPUT_PULLUP,
  *                    so no external resistor is needed)
  *
- * The address below is 0x22, the TMAG5273B parts fitted on the Velocity
+ * The address below is 0x35, the TMAG5273B parts fitted on the Velocity
  * Encoder board and the library default. For an A, C or D part change
  * SENSOR_ADDRESS below, or run the I2CBusCheck example to find out which
  * one you have.
@@ -48,7 +48,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 #include <AlchemyOled.h>
-
+        
 #if !ALCHEMY_OLED_AVAILABLE
 #error "This example needs the Adafruit SH110X and Adafruit GFX libraries installed."
 #endif
@@ -58,7 +58,7 @@
 // ---------------------------------------------------------------------------
 
 static const int      BUTTON_PIN     = 7;                    // GP7, INPUT_PULLUP
-static const uint8_t  SENSOR_ADDRESS = TMAG5273::ADDRESS_B;  // 0x22
+static const uint8_t  SENSOR_ADDRESS = TMAG5273::ADDRESS_A;  // 0x35    
 static const uint8_t  OLED_ADDRESS   = AlchemyOled::DEFAULT_ADDR;
 
 // A full 128x64 frame over I2C costs a few milliseconds, so the display is
